@@ -1,0 +1,4 @@
+Rimbook complete source bundle
+Source commit: 62d765336a9ff4143df187c29dfb62b1dcb3bde2
+APK build commit: 20de04bb021e202fe0070cc9c5de2a65743edd4f
+APK: Android debug preview v2
