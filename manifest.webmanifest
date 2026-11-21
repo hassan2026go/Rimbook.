@@ -1,0 +1,28 @@
+{
+  "id": "./",
+  "name": "Rimbook - إدارة الأعمال والمشاريع",
+  "short_name": "Rimbook",
+  "description": "إدارة المشاريع والعمال واليوميات والأجور والمشتريات والحسابات، مع دعم العمل دون اتصال.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#071b20",
+  "theme_color": "#089eae",
+  "lang": "ar",
+  "dir": "rtl",
+  "icons": [
+    {
+      "src": "./rimbook-icon-192x192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "./rimbook-icon-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}

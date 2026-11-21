@@ -1,0 +1,466 @@
+/* Rimbook full backup — includes local records and IndexedDB attachments.
+   One backup format is shared by local export, encrypted export, Google Drive and device transfer. */
+(function () {
+  "use strict";
+  const FORMAT = "rimbook-full-backup";
+  const VERSION = 1;
+  const SENSITIVE_SETTINGS = ["tgToken", "notionToken", "dropboxToken", "openaiKey", "fbApiKey"];
+  const fileDate = () => iso(new Date());
+
+  function preserveLocalIntegrationSecrets(appData) {
+    if (!appData.settings || typeof appData.settings !== "object" || Array.isArray(appData.settings)) {
+      appData.settings = {};
+    }
+    const localSettings = RB.data.settings || {};
+    for (const key of SENSITIVE_SETTINGS) {
+      delete appData.settings[key];
+      if (typeof localSettings[key] === "string" && localSettings[key]) {
+        appData.settings[key] = localSettings[key];
+      }
+    }
+    return appData;
+  }
+  const toastError = message => toast("تعذر إكمال النسخ الاحتياطي: " + message);
+
+  function bytesToBase64(bytes) {
+    let binary = "";
+    const step = 0x8000;
+    for (let i = 0; i < bytes.length; i += step) {
+      binary += String.fromCharCode(...bytes.subarray(i, i + step));
+    }
+    return btoa(binary);
+  }
+  function base64ToBlob(base64, type) {
+    const binary = atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return new Blob([bytes], { type: type || "application/octet-stream" });
+  }
+
+  window.collectRimbookBackup = async function (options = {}) {
+    if (typeof ATT_DB === "undefined") throw new Error("قاعدة المرفقات غير متاحة");
+    const appData = JSON.parse(JSON.stringify(RB.data));
+    for (const key of SENSITIVE_SETTINGS) delete appData.settings[key];
+    const refs = new Map();
+    (appData.items || []).forEach(item => (item.attachments || []).forEach(att => {
+      if (att && att.aid) refs.set(String(att.aid), att);
+    }));
+    const attachments = [];
+    const maxTotalAttachmentBytes = Number.isFinite(Number(options.maxTotalAttachmentBytes))
+      ? Math.max(0, Number(options.maxTotalAttachmentBytes)) : Infinity;
+    let totalAttachmentBytes = 0;
+    for (const [aid, meta] of refs) {
+      const stored = await ATT_DB.get(aid);
+      if (!stored || !stored.blob) throw new Error("المرفق غير موجود: " + (meta.name || aid));
+      totalAttachmentBytes += Number(stored.blob.size) || 0;
+      if (totalAttachmentBytes > maxTotalAttachmentBytes) {
+        throw new Error("حجم المرفقات يتجاوز الحد المسموح لهذه العملية");
+      }
+      const bytes = new Uint8Array(await stored.blob.arrayBuffer());
+      attachments.push({
+        aid, name: stored.name || meta.name || aid,
+        type: stored.type || meta.type || "application/octet-stream",
+        size: bytes.byteLength, base64: bytesToBase64(bytes)
+      });
+    }
+    return {
+      format: FORMAT, version: VERSION, createdAt: new Date().toISOString(),
+      appData, attachments
+    };
+  };
+
+  function validateFullBackupPayload(payload) {
+    if (!payload || payload.format !== FORMAT || !Number.isInteger(payload.version) ||
+        payload.version < 1 || payload.version > VERSION ||
+        !payload.appData || typeof payload.appData !== "object" ||
+        !Array.isArray(payload.appData.items) || !Array.isArray(payload.attachments)) {
+      throw new Error("بنية ملف النسخة غير صالحة أو إصدارها غير مدعوم");
+    }
+    const referenced = new Set();
+    for (const row of payload.appData.items) {
+      if (!row || typeof row !== "object") throw new Error("سجل غير صالح داخل النسخة");
+      if (row.attachments != null && !Array.isArray(row.attachments)) {
+        throw new Error("قائمة مرفقات أحد السجلات غير صالحة");
+      }
+      for (const ref of row.attachments || []) {
+        if (!ref || typeof ref.aid !== "string" || !ref.aid.trim()) {
+          throw new Error("مرجع مرفق غير صالح داخل بيانات التطبيق");
+        }
+        referenced.add(ref.aid);
+      }
+    }
+    if (payload.attachments.length > 10000) throw new Error("عدد المرفقات في النسخة يتجاوز الحد الآمن");
+    const seen = new Set();
+    const maxAttachmentSize = 256 * 1024 * 1024;
+    const maxTotalAttachmentSize = 512 * 1024 * 1024;
+    let totalAttachmentSize = 0;
+    const prepared = payload.attachments.map(item => {
+      if (!item || typeof item.aid !== "string" || !item.aid.trim() ||
+          typeof item.base64 !== "string" ||
+          !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(item.base64) ||
+          !Number.isSafeInteger(item.size) || item.size < 0 ||
+          item.size > maxAttachmentSize ||
+          item.base64.length > Math.ceil(maxAttachmentSize / 3) * 4 + 4 ||
+          seen.has(item.aid)) {
+        throw new Error("بيانات مرفق غير صالحة أو مكررة أو أكبر من الحد المسموح");
+      }
+      totalAttachmentSize += item.size;
+      if (totalAttachmentSize > maxTotalAttachmentSize) throw new Error("الحجم الإجمالي للمرفقات يتجاوز الحد الآمن");
+      seen.add(item.aid);
+      const blob = base64ToBlob(item.base64, item.type);
+      if (item.size !== blob.size) {
+        throw new Error("حجم المرفق لا يطابق بيانات النسخة: " + (item.name || item.aid));
+      }
+      return { aid:item.aid, name:item.name || item.aid, type:item.type || blob.type, size:blob.size, blob };
+    });
+    if (seen.size !== referenced.size || [...referenced].some(aid => !seen.has(aid))) {
+      throw new Error("النسخة لا تحتوي جميع المرفقات المشار إليها في السجلات");
+    }
+    return prepared;
+  }
+
+  async function restoreFullBackupPayload(payload) {
+    if (typeof ATT_DB === "undefined" || !ATT_DB) throw new Error("قاعدة المرفقات غير متاحة");
+    const prepared = validateFullBackupPayload(payload);
+    const previous = new Map();
+    for (const item of prepared) previous.set(item.aid, await ATT_DB.get(item.aid));
+    const written = [];
+    try {
+      for (const item of prepared) {
+        await ATT_DB.put(item.aid, { name:item.name, type:item.type, size:item.size, blob:item.blob });
+        written.push(item.aid);
+      }
+      const restoredData = preserveLocalIntegrationSecrets(JSON.parse(JSON.stringify(payload.appData)));
+      if (!RB.replace(restoredData)) throw new Error("تعذر استبدال بيانات التطبيق");
+    } catch (error) {
+      const rollbackErrors = [];
+      for (const aid of written.reverse()) {
+        try {
+          const old = previous.get(aid);
+          if (old) await ATT_DB.put(aid, old);
+          else await ATT_DB.del(aid);
+        } catch (rollbackError) { rollbackErrors.push(rollbackError); }
+      }
+      if (rollbackErrors.length) throw new Error("فشل الاسترجاع وتعذر التراجع الكامل عن بعض المرفقات");
+      throw error;
+    }
+    render();
+    return { legacy:false, attachments:prepared.length };
+  }
+
+  window.restoreRimbookBackup = async function (payload) {
+    if (payload && payload.format === FORMAT) return restoreFullBackupPayload(payload);
+    // Backward compatibility: accept all previous JSON backups.
+    if (payload && Array.isArray(payload.items)) {
+      const restoredData = preserveLocalIntegrationSecrets(JSON.parse(JSON.stringify(payload)));
+      if (!RB.replace(restoredData)) throw new Error("تعذر استعادة النسخة القديمة");
+      render();
+      return { legacy: true, attachments: 0 };
+    }
+    throw new Error("ملف النسخة غير معروف أو تالف");
+  };
+
+  window.backupLocal = async function () {
+    try {
+      const payload = await collectRimbookBackup();
+      const content = JSON.stringify(payload);
+      dl("rimbook-full-backup-" + fileDate() + ".json", content, "application/json");
+      toast("تم إنشاء نسخة كاملة تشمل البيانات والمرفقات (" + payload.attachments.length + ")");
+    } catch (e) { toastError(e.message || "خطأ غير معروف"); }
+  };
+
+  window.restoreLocal = async function (input) {
+    const file = input.files && input.files[0];
+    if (!file) return;
+    try {
+      const payload = JSON.parse(await file.text());
+      if (!confirm("ستُستبدل بيانات المفكرة الحالية بمحتويات النسخة. هل تريد المتابعة؟")) return;
+      const result = await restoreRimbookBackup(payload);
+      toast(result.legacy ? "تمت استعادة النسخة القديمة؛ المرفقات غير مشمولة فيها." : "تمت استعادة البيانات و" + result.attachments + " مرفقاً.");
+    } catch (e) { toastError(e.message || "ملف غير صالح"); }
+    finally { input.value = ""; }
+  };
+
+  window.backupEncrypted = async function () {
+    const pass = prompt("كلمة سر التشفير (6 أحرف على الأقل). احتفظ بها؛ لا يمكن استعادتها.");
+    if (!pass || pass.length < 6) return toast("كلمة السر يجب أن تكون 6 أحرف على الأقل");
+    try {
+      const payload = await collectRimbookBackup();
+      const encrypted = await encryptData(payload, pass);
+      const blob = new Blob([encrypted], { type: "application/octet-stream" });
+      const file = new File([blob], "rimbook-encrypted-" + fileDate() + ".rbe", { type: "application/octet-stream" });
+      if (navigator.canShare && navigator.canShare({ files: [file] })) await navigator.share({ files: [file], title: "Rimbook encrypted backup" });
+      else dl(file.name, blob, "application/octet-stream");
+      toast("تم إنشاء نسخة مشفرة تشمل المرفقات");
+    } catch (e) { toastError(e.message || "فشل التشفير"); }
+  };
+
+  window.restoreEncrypted = async function (input) {
+    const file = input.files && input.files[0];
+    if (!file) return;
+    const pass = prompt("كلمة سر فك التشفير:");
+    if (!pass) return;
+    try {
+      const payload = await decryptData(new Uint8Array(await file.arrayBuffer()), pass);
+      if (!confirm("ستُستبدل بيانات المفكرة الحالية بمحتويات النسخة المشفرة. هل تريد المتابعة؟")) return;
+      const result = await restoreRimbookBackup(payload);
+      toast(result.legacy ? "تمت استعادة النسخة المشفرة القديمة." : "تم فك التشفير واستعادة البيانات والمرفقات.");
+    } catch (e) { toast("فشل فك التشفير أو استعادة النسخة: تحقق من كلمة السر وسلامة الملف."); }
+    finally { input.value = ""; }
+  };
+
+  window.gdriveUpload = async function () {
+    try {
+      const token = await gdriveAuth();
+      const payload = await collectRimbookBackup();
+      const content = JSON.stringify(payload);
+      const boundary = "----rimbook" + Date.now();
+      const meta = { name: GDRIVE_FILE, mimeType: "application/json" };
+      const body = "--" + boundary + "\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n" +
+        JSON.stringify(meta) + "\r\n--" + boundary + "\r\nContent-Type: application/json\r\n\r\n" +
+        content + "\r\n--" + boundary + "--";
+      const query = encodeURIComponent("name='" + GDRIVE_FILE + "' and trashed=false");
+      const listing = await fetch("https://www.googleapis.com/drive/v3/files?q=" + query + "&fields=files(id)", {
+        headers: { Authorization: "Bearer " + token }
+      }).then(r => { if (!r.ok) throw new Error("تعذر البحث في Drive"); return r.json(); });
+      const existing = listing.files && listing.files[0];
+      const url = existing
+        ? "https://www.googleapis.com/upload/drive/v3/files/" + existing.id + "?uploadType=multipart"
+        : "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart";
+      const response = await fetch(url, {
+        method: existing ? "PATCH" : "POST",
+        headers: { Authorization: "Bearer " + token, "Content-Type": "multipart/related; boundary=" + boundary },
+        body
+      });
+      if (!response.ok) throw new Error("فشل رفع النسخة إلى Drive: " + response.status);
+      toast("تم رفع النسخة الكاملة والمرفقات إلى Google Drive");
+    } catch (e) { toastError(e.message || "تعذر الاتصال بـ Google Drive"); }
+  };
+
+  window.gdriveDownload = async function () {
+    try {
+      const token = await gdriveAuth();
+      const query = encodeURIComponent("name='" + GDRIVE_FILE + "' and trashed=false");
+      const listing = await fetch("https://www.googleapis.com/drive/v3/files?q=" + query + "&fields=files(id)", {
+        headers: { Authorization: "Bearer " + token }
+      }).then(r => { if (!r.ok) throw new Error("تعذر البحث في Drive"); return r.json(); });
+      if (!listing.files || !listing.files.length) return toast("لا توجد نسخة على Google Drive");
+      const response = await fetch("https://www.googleapis.com/drive/v3/files/" + listing.files[0].id + "?alt=media", {
+        headers: { Authorization: "Bearer " + token }
+      });
+      if (!response.ok) throw new Error("تعذر تنزيل النسخة");
+      const payload = await response.json();
+      if (!confirm("ستُستبدل بيانات المفكرة الحالية بالنسخة الموجودة على Google Drive. هل تريد المتابعة؟")) return;
+      const result = await restoreRimbookBackup(payload);
+      toast(result.legacy ? "تم تنزيل النسخة القديمة." : "تم تنزيل واستعادة البيانات و" + result.attachments + " مرفقاً.");
+    } catch (e) { toastError(e.message || "تعذر تنزيل النسخة"); }
+  };
+
+  function crc32(bytes) {
+    let crc = 0xffffffff;
+    for (let i = 0; i < bytes.length; i++) {
+      crc ^= bytes[i];
+      for (let bit = 0; bit < 8; bit++) crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1));
+    }
+    return (crc ^ 0xffffffff) >>> 0;
+  }
+  function concatBytes(parts) {
+    const length = parts.reduce((sum, part) => sum + part.length, 0);
+    const out = new Uint8Array(length);
+    let offset = 0;
+    for (const part of parts) { out.set(part, offset); offset += part.length; }
+    return out;
+  }
+  function u16(value) { return new Uint8Array([value & 255, (value >>> 8) & 255]); }
+  function u32(value) { return new Uint8Array([value & 255, (value >>> 8) & 255, (value >>> 16) & 255, (value >>> 24) & 255]); }
+  function buildStoredZip(files) {
+    const encoder = new TextEncoder(), local = [], central = [];
+    let offset = 0;
+    for (const file of files) {
+      const name = encoder.encode(file.name), data = file.data;
+      const crc = crc32(data), size = data.length, flags = 0x0800;
+      const header = concatBytes([
+        u32(0x04034b50),u16(20),u16(flags),u16(0),u16(0),u16(0),
+        u32(crc),u32(size),u32(size),u16(name.length),u16(0),name
+      ]);
+      local.push(header, data);
+      const directory = concatBytes([
+        u32(0x02014b50),u16(20),u16(20),u16(flags),u16(0),u16(0),u16(0),
+        u32(crc),u32(size),u32(size),u16(name.length),u16(0),u16(0),
+        u16(0),u16(0),u32(0),u32(offset),name
+      ]);
+      central.push(directory);
+      offset += header.length + data.length;
+    }
+    const centralBytes = concatBytes(central), localBytes = concatBytes(local);
+    const end = concatBytes([
+      u32(0x06054b50),u16(0),u16(0),u16(files.length),u16(files.length),
+      u32(centralBytes.length),u32(localBytes.length),u16(0)
+    ]);
+    return concatBytes([localBytes, centralBytes, end]);
+  }
+  async function inflateRawZipEntry(bytes) {
+    if (typeof DecompressionStream !== "function" || typeof Blob !== "function" || typeof Response !== "function") {
+      throw new Error("هذا المتصفح لا يدعم فك ضغط ZIP من نوع DEFLATE؛ استخدم نسخة Rimbook غير المضغوطة أو حدّث المتصفح");
+    }
+    try {
+      const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("deflate-raw"));
+      return new Uint8Array(await new Response(stream).arrayBuffer());
+    } catch (error) {
+      throw new Error("تعذر فك ضغط أحد ملفات ZIP بطريقة DEFLATE: " + (error.message || "تنسيق غير مدعوم"));
+    }
+  }
+
+  async function parseStoredZip(bytes) {
+    if (!(bytes instanceof Uint8Array) || bytes.length < 22) throw new Error("ملف ZIP قصير أو غير صالح");
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const decoder = new TextDecoder();
+    const files = new Map();
+    const maxEntrySize = 256 * 1024 * 1024;
+    const maxTotalSize = 512 * 1024 * 1024;
+    const searchFrom = Math.max(0, bytes.length - 22 - 0xffff);
+    let endOffset = -1;
+    for (let i = bytes.length - 22; i >= searchFrom; i--) {
+      if (view.getUint32(i, true) !== 0x06054b50) continue;
+      const commentLength = view.getUint16(i + 20, true);
+      if (i + 22 + commentLength === bytes.length) { endOffset = i; break; }
+    }
+    if (endOffset < 0) throw new Error("لم نعثر على نهاية ملف ZIP أو أن الملف تالف");
+    const disk = view.getUint16(endOffset + 4, true);
+    const centralDisk = view.getUint16(endOffset + 6, true);
+    const diskEntries = view.getUint16(endOffset + 8, true);
+    const entryCount = view.getUint16(endOffset + 10, true);
+    const centralSize = view.getUint32(endOffset + 12, true);
+    const centralOffset = view.getUint32(endOffset + 16, true);
+    if (disk || centralDisk || diskEntries !== entryCount || entryCount === 0xffff ||
+        centralSize === 0xffffffff || centralOffset === 0xffffffff) {
+      throw new Error("ملفات ZIP متعددة الأجزاء أو ZIP64 أو المشفرة غير مدعومة حالياً");
+    }
+    if (centralOffset + centralSize > endOffset || centralOffset + centralSize > bytes.length) {
+      throw new Error("فهرس ملفات ZIP خارج حدود الملف");
+    }
+    let offset = centralOffset, totalSize = 0;
+    for (let index = 0; index < entryCount; index++) {
+      if (offset + 46 > bytes.length || view.getUint32(offset, true) !== 0x02014b50) {
+        throw new Error("فهرس ZIP الداخلي غير صالح");
+      }
+      const flags = view.getUint16(offset + 8, true);
+      const method = view.getUint16(offset + 10, true);
+      const expectedCrc = view.getUint32(offset + 16, true);
+      const compressedSize = view.getUint32(offset + 20, true);
+      const size = view.getUint32(offset + 24, true);
+      const nameLength = view.getUint16(offset + 28, true);
+      const extraLength = view.getUint16(offset + 30, true);
+      const commentLength = view.getUint16(offset + 32, true);
+      const localOffset = view.getUint32(offset + 42, true);
+      const entryEnd = offset + 46 + nameLength + extraLength + commentLength;
+      if (entryEnd > bytes.length || compressedSize === 0xffffffff || size === 0xffffffff || localOffset === 0xffffffff) {
+        throw new Error("أحد ملفات ZIP يستخدم حجماً أو إزاحة غير مدعومة");
+      }
+      if ((flags & 1) || ![0, 8].includes(method)) {
+        throw new Error("ملف ZIP مشفر أو يستخدم طريقة ضغط غير مدعومة");
+      }
+      if (size > maxEntrySize || totalSize + size > maxTotalSize) {
+        throw new Error("حجم محتويات ZIP يتجاوز الحد الآمن للاستعادة على هذا الجهاز");
+      }
+      const name = decoder.decode(bytes.subarray(offset + 46, offset + 46 + nameLength));
+      if (!name || files.has(name)) throw new Error("اسم ملف مفقود أو مكرر داخل ZIP");
+      if (localOffset + 30 > bytes.length || view.getUint32(localOffset, true) !== 0x04034b50) {
+        throw new Error("رأس أحد الملفات داخل ZIP غير صالح");
+      }
+      const localFlags = view.getUint16(localOffset + 6, true);
+      const localMethod = view.getUint16(localOffset + 8, true);
+      const localNameLength = view.getUint16(localOffset + 26, true);
+      const localExtraLength = view.getUint16(localOffset + 28, true);
+      if (localMethod !== method || Boolean(localFlags & 1) !== Boolean(flags & 1)) {
+        throw new Error("بيانات رأس ZIP لا تطابق فهرس الملف");
+      }
+      const dataStart = localOffset + 30 + localNameLength + localExtraLength;
+      const dataEnd = dataStart + compressedSize;
+      if (dataEnd > bytes.length || dataStart < localOffset + 30) throw new Error("بيانات أحد ملفات ZIP خارج حدود الملف");
+      const compressed = bytes.subarray(dataStart, dataEnd);
+      const data = method === 0 ? new Uint8Array(compressed) : await inflateRawZipEntry(compressed);
+      if (data.length !== size || crc32(data) !== expectedCrc) throw new Error("تلف في أحد ملفات ZIP أو عدم تطابق الحجم");
+      files.set(name, data);
+      totalSize += size;
+      offset = entryEnd;
+    }
+    if (offset !== centralOffset + centralSize) throw new Error("حجم فهرس ZIP لا يطابق عدد الملفات");
+    if (!files.has("rimbook-backup.json")) throw new Error("ملف بيانات Rimbook غير موجود داخل ZIP");
+    return files;
+  }
+
+  window.backupZip = async function () {
+    try {
+      const payload = await collectRimbookBackup();
+      const encoder = new TextEncoder();
+      const attachments = [];
+      const files = [];
+      for (const item of payload.attachments) {
+        const path = "attachments/" + item.aid + ".bin";
+        const binary = atob(item.base64);
+        const data = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) data[i] = binary.charCodeAt(i);
+        files.push({ name: path, data });
+        attachments.push({ aid:item.aid, name:item.name, type:item.type, size:item.size, path });
+      }
+      const manifest = {
+        format: FORMAT, version: VERSION, createdAt: payload.createdAt,
+        appData: payload.appData, attachments
+      };
+      files.unshift({ name:"rimbook-backup.json", data:encoder.encode(JSON.stringify(manifest)) });
+      const zip = buildStoredZip(files);
+      dl("rimbook-full-backup-" + fileDate() + ".zip", new Blob([zip], {type:"application/zip"}), "application/zip");
+      toast("تم إنشاء ملف ZIP كامل يضم البيانات و" + attachments.length + " مرفقاً");
+    } catch (e) { toastError(e.message || "تعذر إنشاء ZIP"); }
+  };
+
+  window.restoreZip = async function (input) {
+    const file = input.files && input.files[0];
+    if (!file) return;
+    try {
+      const files = await parseStoredZip(new Uint8Array(await file.arrayBuffer()));
+      const decoder = new TextDecoder();
+      const manifest = JSON.parse(decoder.decode(files.get("rimbook-backup.json")));
+      if (!manifest || manifest.format !== FORMAT || !manifest.appData || !Array.isArray(manifest.attachments)) {
+        throw new Error("بنية نسخة ZIP غير صالحة");
+      }
+      const attachments = [];
+      for (const item of manifest.attachments) {
+        const bytes = files.get(item.path);
+        if (!bytes) throw new Error("مرفق مفقود داخل ZIP: " + (item.name || item.aid));
+        attachments.push({
+          aid:item.aid, name:item.name, type:item.type, size:bytes.length,
+          base64:bytesToBase64(bytes)
+        });
+      }
+      if (!confirm("ستُستبدل بيانات المفكرة الحالية بمحتويات ملف ZIP الكامل. هل تريد المتابعة؟")) return;
+      const result = await restoreRimbookBackup({
+        format:FORMAT, version:manifest.version, createdAt:manifest.createdAt,
+        appData:manifest.appData, attachments
+      });
+      toast("تمت استعادة نسخة ZIP والبيانات و" + result.attachments + " مرفقاً");
+    } catch (e) { toastError(e.message || "ملف ZIP غير صالح"); }
+    finally { input.value = ""; }
+  };
+
+  async function shareFullBackup(target) {
+    try {
+      const payload = await collectRimbookBackup();
+      const content = JSON.stringify(payload);
+      const file = new File([content], "rimbook-full-backup-" + fileDate() + ".json", { type: "application/json" });
+      if (navigator.canShare && navigator.canShare({ files: [file] })) {
+        try { await navigator.share({ files: [file], title: "Rimbook full backup" }); return; }
+        catch (e) { if (e.name === "AbortError") return; }
+      }
+      dl(file.name, content, "application/json");
+      if (target === "whatsapp") {
+        const phone = String(RB.data.settings.managerPhone || "").replace(/\D/g, "");
+        setTimeout(() => window.open(phone ? "https://wa.me/" + phone : "https://wa.me/", "_blank"), 500);
+      }
+      toast("تم تجهيز نسخة كاملة للمشاركة");
+    } catch (e) { toastError(e.message || "تعذر تجهيز النسخة"); }
+  }
+  window.shareFileWhatsApp = () => shareFullBackup("whatsapp");
+  window.shareViaAny = () => shareFullBackup("any");
+})();
