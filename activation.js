@@ -2,7 +2,7 @@
 (function(){
  const D=RB.data;
  D.profile=Object.assign({name:"",role:"employee",phone:"",email:"",city:"",skills:"",about:""},D.profile||{});
- D.settings=Object.assign({theme:"dark",fs:15,dailyRate:50,otRate:10,currency:"USD",managerPhone:"",enabled:{}},D.settings||{});
+ D.settings=Object.assign({theme:"dark",fs:15,dailyRate:0,otRate:0,currency:"USD",managerPhone:"",enabled:{}},D.settings||{});
  ["items","projects","workers","purchases","habits","goals","contacts","invoices"].forEach(k=>{if(!Array.isArray(D[k]))D[k]=[];});
  if(!D.settings.enabled)D.settings.enabled={};
  if(!ROLES[D.profile.role])D.profile.role="employee";
@@ -18,19 +18,8 @@
  const active=()=>D.projects.find(p=>p.id===D.activeProject)||null;
  const field=(id,label,type,placeholder,value)=>'<label class="muted">'+label+'</label><input id="'+id+'" type="'+(type||"text")+'" placeholder="'+(placeholder||"")+'" value="'+escv(value||"")+'" style="width:100%;margin:4px 0 10px">';
  const select=(id,label,opts,chosen)=>'<label class="muted">'+label+'</label><select id="'+id+'" style="width:100%;margin:4px 0 10px">'+opts.map(o=>'<option value="'+escv(o[0])+'" '+(o[0]===chosen?"selected":"")+'>'+escv(o[1])+'</option>').join("")+'</select>';
-function projectOptions(projects, selected) {
-    const rows = Array.isArray(projects) ? projects.filter(p => p && p.id != null && String(p.name || "").trim()) : [];
-    const validSelected = rows.some(p => String(p.id) === String(selected)) ? String(selected) : "";
-    return { options: [["", "عام — غير مرتبط بمشروع"], ...rows.map(p => [String(p.id), String(p.name)])], selected: validSelected, hasProjects: rows.length > 0 };
-  }
-  const selectedProject=()=>{const el=document.getElementById("projectId");return el?(el.value||null):(D.activeProject||null);};
-  const projectField=()=>{
-    const data = projectOptions(D.projects, D.activeProject);
-    return select("projectId","المشروع (اختياري)",data.options,data.selected) +
-      (data.hasProjects
-        ? '<p class="muted">اختر مشروعاً لربط السجل به، أو اتركه «عام» إذا لم يكن تابعاً لمشروع.</p>'
-        : '<p class="muted">«عام» يعني أن السجل غير مرتبط بمشروع. أنشئ مشروعاً من صفحة المشاريع ليظهر هنا تلقائياً.</p><button type="button" onclick="go(\'projects\')">إنشاء مشروع</button>');
-  };
+  const selectedProject=()=>document.getElementById("projectId")?window.rimbookProjectFromInput("projectId"):(D.activeProject||null);
+  const projectField=()=>window.rimbookProjectInput("projectId",D.activeProject,"اسم المشروع (اختياري)")+'<p class="muted">اكتب اسم المشروع الحقيقي؛ إن لم يكن موجوداً يُنشأ تلقائياً عند الحفظ. اتركه فارغاً إذا لم يكن السجل تابعاً لمشروع.</p>';
  const empty=m=>'<p class="muted" style="text-align:center;padding:12px">'+m+'</p>';
  const box=(title,body)=>'<div class="card"><b>'+title+'</b>'+body+'</div>';
  window.activeProj=active;
@@ -169,7 +158,7 @@ VIEWS.goals=()=>{
     return box("إنشاء هدف جديد",'<p class="muted">الهدف هو شيء تريد الوصول إليه. حدّد اسمه والعدد الذي تريد تحقيقه، ثم اختر وحدة القياس المناسبة.</p>'+
       field("gname","ماذا تريد أن تنجز؟","text","مثلاً: قراءة كتاب")+
       field("gtarget","كم تريد أن تنجز؟","number","مثلاً: 10","10")+
-      '<label class="muted" for="gcurrent">كم أنجزت حتى الآن؟</label><input id="gcurrent" type="number" min="0" step="any" inputmode="decimal" value="0" style="width:100%;margin:4px 0 10px">'+
+      '<label class="muted" for="gcurrent">كم أنجزت حتى الآن؟</label><input id="gcurrent" type="number" min="0" step="any" inputmode="decimal" placeholder="0" style="width:100%;margin:4px 0 10px">'+
       unitSelect+'<button class="p" onclick="addGoal()">حفظ الهدف</button>')+
       box("أهدافي ("+goals.length+")",cards||empty("لا توجد أهداف بعد. ابدأ بهدف صغير وواضح."));
   };

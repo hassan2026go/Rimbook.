@@ -63,6 +63,10 @@ function parseSpoken(raw){
  return {date,items:out,project,raw};
 }
 window.voiceLedgerParse=parseSpoken;
+const ATTENDANCE=["work","holiday","absence"];
+function hasAttendance(workerId,date){
+ return D.items.some(row=>row.type==="work"&&String(row.workerId||"")===String(workerId||"")&&row.d===date&&ATTENDANCE.includes(row.k)&&!row.isReversal&&!row.reversedBy);
+}
 window.voiceLedgerConfirm=function(){
  const batch=pending;
  if(!batch||batch.error||!Array.isArray(batch.items)||!batch.items.length)return;
@@ -84,9 +88,8 @@ window.voiceLedgerConfirm=function(){
   return {...entry,workerId,person:worker.name,normalHours,workerDue,overtimePay:pay.overtimePay,workerPaid:entry.k==="payment"?(Number(entry.rec)||0):0,
    workerAdvance:entry.k==="advance"?(Number(entry.advance)||0):0,due:0,rec:0,advance:0};
  });
- const duplicateAttendance=entries.find(entry=>entry.workerId&&["work","holiday","absence"].includes(entry.k)&&
-  D.items.some(row=>row.type==="work"&&String(row.workerId||"")===String(entry.workerId)&&row.d===entry.d&&["work","holiday","absence"].includes(row.k)&&!row.isReversal&&!row.reversedBy));
- if(duplicateAttendance){toast("يوجد سجل دوام لهذا العامل في هذا التاريخ. صحّح السجل السابق بقيد عكسي قبل اعتماد التسجيل الصوتي.");return;}
+ const duplicateAttendance=entries.find(entry=>ATTENDANCE.includes(entry.k)&&hasAttendance(entry.workerId,entry.d));
+ if(duplicateAttendance){pending=null;render();toast("سُجّل دوام (عمل أو عطلة) لهذا اليوم مسبقاً، ويُقبل تسجيل واحد فقط لكل يوم. إن أخطأت فصحّح السجل السابق بقيد عكسي ثم أعد التسجيل.");return;}
  const workerId=entries.find(x=>x.workerId)?.workerId||null;
  const person=entries.find(x=>x.workerId)?.person||"";
  const ok=RB.transact(d=>{
@@ -102,8 +105,8 @@ function voiceLedgerSaveQuick(kind,amount,workDetails){
  if(!labels[kind])return;
  const worker=D.profile?.role==="worker"?(D.workers||[]).find(w=>String(w.id)===String(D.profile.workerId||"")&&w.active!==false):null;
  if(D.profile?.role==="worker"&&!worker)return toast("اربط ملف العامل من صفحة الملف الشخصي أولاً"),false;
- if(worker&&["work","holiday"].includes(kind)&&D.items.some(row=>row.type==="work"&&String(row.workerId||"")===String(worker.id)&&row.d===today()&&["work","holiday","absence"].includes(row.k)&&!row.isReversal&&!row.reversedBy))
-  return toast("يوجد سجل دوام لهذا العامل اليوم. صحّح السجل السابق بقيد عكسي قبل التسجيل مرة أخرى."),false;
+ if(["work","holiday"].includes(kind)&&hasAttendance(worker?worker.id:null,today()))
+  return toast("سُجّل دوام لهذا اليوم مسبقاً، ويُقبل تسجيل واحد فقط لكل يوم. صحّح السجل السابق بقيد عكسي قبل التسجيل مرة أخرى."),false;
  const planned=Number(D.settings.normalHoursPerDay)||8;
  const rawOt=kind==="work"?Number(workDetails?.otHours??0):0;
  const rawNormal=kind==="work"?Number(workDetails?.normalHours??planned):0;
@@ -189,10 +192,10 @@ window.reverseWorkEntry=function(id){
  let result;const saved=RB.transact(data=>{result=applyWorkReversal(data,id,reason,now,newId);if(!result.ok)throw new Error(result.error);});
  if(!saved)return;render();toast("تم حفظ القيد العكسي. أضف الحركة الصحيحة كسجل جديد.");
 };
-function handleVoiceTranscript(transcript){
+function handleVoiceTranscript(transcript,fromText){
  const parsed=parseSpoken(transcript);
  if(parsed.error){
-  if(parsed.error.startsWith("لم أفهم نوع الحركة")){
+  if(!fromText&&parsed.error.startsWith("لم أفهم نوع الحركة")){
    const saved=RB.add({type:"note",d:today(),title:"ملاحظة صوتية",body:String(transcript||"").trim(),project:D.activeProject||null,voice:true,created:Date.now()});
    if(saved){pending=null;render();toast("تم حفظ الكلام كملاحظة صوتية في المفكرة");}
    else toast("تعذر حفظ النص الصوتي");
@@ -205,13 +208,33 @@ function handleVoiceTranscript(transcript){
  render();
  go("voice");
 }
+window.voiceLedgerTextSubmit=function(){
+ const input=document.getElementById("voiceTextInput");
+ const text=String(input?.value||"").trim();
+ if(!text)return toast("اكتب جملة مثل: اليوم عمل، أو اليوم عطلة، أو واصل دفعة 10 دولار");
+ handleVoiceTranscript(text,true);
+};
+function setVoiceStatus(message){
+ const el=document.getElementById("voiceMicStatus");if(el)el.textContent=message||"";
+ const btn=document.getElementById("voiceMicButton");if(btn)btn.textContent=listening?"⏹ إنهاء الاستماع":"🎤 ابدأ التحدث";
+}
+const withTimeout=(promise,ms,message)=>Promise.race([promise,new Promise((_,reject)=>setTimeout(()=>reject(new Error(message)),ms))]);
 /* ===== المايك والتسجيل التلقائي ===== */
 const AUDIO_MAX_MS=120000, SILENCE_MS=2500, NO_SPEECH_MS=10000;
 let audioStarting=false, audioDiscard=false, audioTicker=null, stopSilenceWatch=null, audioT0=0, activeSR=null;
+let micWatchdog=null;
 const setMicState=active=>{
  listening=!!active;
+ if(micWatchdog){clearTimeout(micWatchdog);micWatchdog=null;}
+ /* حماية: لا يبقى الميكروفون في حالة "يستمع" إلى الأبد إذا لم يرد النظام */
+ if(active)micWatchdog=setTimeout(()=>{
+  if(!listening)return;
+  try{if(activeSR)activeSR.abort();else if(typeof window.rimbookOfflineSpeechStop==="function")window.rimbookOfflineSpeechStop();}catch(e){}
+  listening=false;activeSR=null;setVoiceStatus("");toast("انتهت مهلة الاستماع دون رد من النظام. اضغط ابدأ التحدث مرة أخرى أو اكتب الجملة.");
+ },60000);
  const b=document.getElementById("micBtn");
  if(b)b.classList.toggle("rec",!!active||!!(audioRecorder&&audioRecorder.state==="recording"));
+ setVoiceStatus(active?"🎤 جارٍ الاستماع... تحدث الآن، واضغط الزر مرة ثانية للإنهاء":"");
 };
 function micErrorMessage(error){
  const n=error&&error.name,m=String((error&&error.message)||"");
@@ -273,17 +296,18 @@ window.voiceLedgerStart=function(){
  if(audioRecorder&&audioRecorder.state==="recording"){window.voiceAudioStop();return;}
  if(listening){
   /* ضغطة ثانية على المايك تنهي الاستماع وتعالج ما قيل */
+  toast("جارٍ إنهاء الاستماع ومعالجة ما قيل...");setVoiceStatus("⏳ جارٍ المعالجة...");
   try{if(activeSR)activeSR.stop();else if(typeof window.rimbookOfflineSpeechStop==="function")window.rimbookOfflineSpeechStop();}catch(e){}
   return;
  }
  const capacitor=window.Capacitor;
  const isNative=!!(capacitor&&typeof capacitor.isNativePlatform==="function"&&capacitor.isNativePlatform());
  if(isNative&&typeof window.rimbookOfflineSpeechStart==="function"){
-  setMicState(true);
+  setMicState(true);setVoiceStatus("⏳ جارٍ تجهيز الميكروفون...");
   (async()=>{
    try{
     await ensureMicPermission();
-    const info=await window.rimbookOfflineSpeechCheck();
+    const info=await withTimeout(window.rimbookOfflineSpeechCheck(),8000,"لا يرد محرك التعرف الصوتي في الجهاز").catch(()=>({available:false}));
     if(!info.available){
      setMicState(false);
      toast("لا تتوفر خدمة تعرف على الكلام في الجهاز؛ سأسجّل صوتك وأحفظه تلقائياً.");
@@ -291,7 +315,7 @@ window.voiceLedgerStart=function(){
     }
     let offline=info.languageStatus==="installed"&&info.offlineAvailable!==false;
     let retries=0;
-    toast("🎤 تحدث الآن بوضوح...");
+    toast("🎤 تحدث الآن بوضوح...");setVoiceStatus("🎤 جارٍ الاستماع... تحدث الآن، واضغط الزر مرة ثانية للإنهاء");
     for(;;){
      try{
       const result=await window.rimbookOfflineSpeechStart("ar-SA",offline);
@@ -308,7 +332,7 @@ window.voiceLedgerStart=function(){
      }
     }
    }catch(error){
-    toast(micErrorMessage(error).startsWith("إذن")?micErrorMessage(error):(error.message||"تعذر التعرف الصوتي المحلي"));
+    toast(micErrorMessage(error).startsWith("إذن")?micErrorMessage(error):(error.message||"تعذر التعرف الصوتي المحلي")+" — يمكنك كتابة الجملة في الخانة.");
    }finally{setMicState(false);}
   })();
   return;
@@ -469,7 +493,7 @@ VIEWS.voice=function(){
  const logs=RB.all("voice_log").filter(l=>!isWorker||String(l.workerId||"")===String(workerId)).slice().sort((a,b)=>(b.created||0)-(a.created||0));
  const preview=pending&&!pending.error?'<div class="card" style="border:2px solid var(--ac)"><b>🔎 راجع ما فهمه التطبيق قبل الحفظ</b><p>'+escv(pending.raw)+'</p>'+pending.items.map(x=>'<div class="item"><span>'+({work:"يوم عمل",holiday:"عطلة",payment:"دفعة مستلمة",advance:"سلفة للعامل",expense:"مصروف"}[x.k])+'</span><b>'+money(x.due||x.rec||x.expense||x.advance)+'</b></div>').join("")+'<p class="muted">الأجر اليومي مأخوذ من إعدادات الحساب. يمكنك إلغاء التسجيل إذا كان الفهم غير صحيح.</p><button class="p" onclick="voiceLedgerConfirm()">✓ اعتماد وحفظ</button> <button onclick="voiceLedgerCancel()">إلغاء</button><button onclick="voiceLedgerListen('+JSON.stringify(pending.raw).replace(/</g,"\\u003c")+')">🔊 استماع</button></div>':"";
  const kind={work:"عمل",holiday:"عطلة",payment:"دفعة مستلمة",worker_payment:"دفعة أجور",advance:"سلفة",worker_advance:"سلفة",expense:"مصروف"};
- return '<div class="card"><b style="font-size:17px">🎙️ السجل الصوتي للعمال</b><p class="muted">قل جملة قصيرة مثل: «اليوم عمل واصل دفعة 10 دولار» أو «اليوم عطلة».</p><div class="grid3" style="margin:12px 0"><button class="card" style="min-height:88px;font-size:15px" onclick="voiceLedgerQuick(\'work\')">🧱<br><b>يوم عمل</b></button><button class="card" style="min-height:88px;font-size:15px" onclick="voiceLedgerQuick(\'holiday\')">🌴<br><b>عطلة</b></button><button class="card" style="min-height:88px;font-size:15px" onclick="voiceLedgerQuick(\'payment\')">💵<br><b>دفعة مستلمة</b></button><button class="card" style="min-height:88px;font-size:15px" onclick="voiceLedgerQuick(\'advance\')">🤝<br><b>سلفة</b></button><button class="card" style="min-height:88px;font-size:15px" onclick="voiceLedgerQuick(\'expense\')">🧾<br><b>مصروف</b></button></div><button class="p" style="font-size:16px;padding:12px 18px" onclick="voiceLedgerStart()">🎤 ابدأ التحدث</button><p class="muted">ستظهر معاينة لتأكيدها قبل إدخالها في الحسابات.</p><hr><b>تسجيل صوتي محفوظ</b><div class="row"><button id="voiceAudioStart" type="button" onclick="voiceAudioToggle()">'+(audioRecorder&&audioRecorder.state==="recording"?"⏹ إيقاف وحفظ":"🔴 بدء التسجيل")+'</button></div><p id="voiceAudioStatus" class="muted">اضغط بدء التسجيل وتحدث؛ يتوقف ويُحفظ تلقائياً عند الصمت، ثم شغّله لاحقاً من السجل.</p></div>'+preview+
+ return '<div class="card"><b style="font-size:17px">🎙️ السجل الصوتي للعمال</b><p class="muted">قل أو اكتب جملة قصيرة مثل: «اليوم عمل» أو «اليوم عطلة» أو «واصل دفعة 10 دولار». يُسجَّل دوام واحد فقط لكل عامل في اليوم، وتظهر معاينة لتأكيدها قبل الحفظ.</p><button id="voiceMicButton" class="p" style="font-size:16px;padding:12px 18px" onclick="voiceLedgerStart()">'+(listening?"⏹ إنهاء الاستماع":"🎤 ابدأ التحدث")+'</button><p id="voiceMicStatus" class="muted"></p><div class="row" style="margin:10px 0"><input id="voiceTextInput" placeholder="أو اكتب هنا: اليوم عمل" maxlength="200" style="flex:1" onkeydown="if(event.key===\'Enter\')voiceLedgerTextSubmit()"><button type="button" onclick="voiceLedgerTextSubmit()">تحليل</button></div><b>إدخال مبلغ</b><div class="grid3" style="margin:8px 0 12px"><button class="card" style="min-height:76px;font-size:15px" onclick="voiceLedgerQuick(\'payment\')">💵<br><b>دفعة مستلمة</b></button><button class="card" style="min-height:76px;font-size:15px" onclick="voiceLedgerQuick(\'advance\')">🤝<br><b>سلفة</b></button><button class="card" style="min-height:76px;font-size:15px" onclick="voiceLedgerQuick(\'expense\')">🧾<br><b>مصروف</b></button></div><hr><b>تسجيل صوتي محفوظ</b><div class="row"><button id="voiceAudioStart" type="button" onclick="voiceAudioToggle()">'+(audioRecorder&&audioRecorder.state==="recording"?"⏹ إيقاف وحفظ":"🔴 بدء التسجيل")+'</button></div><p id="voiceAudioStatus" class="muted">اضغط بدء التسجيل وتحدث؛ يتوقف ويُحفظ تلقائياً عند الصمت، ثم شغّله لاحقاً من السجل.</p></div>'+preview+
  '<div class="card"><b>📅 الحساب الشهري والتقويم</b><label class="muted">اختر الشهر</label><input id="voiceMonth" type="month" value="'+month+'" onchange="render()" style="width:100%"><div class="grid3" style="margin-top:8px"><div class="card">أيام العمل<h3>'+worked+'</h3></div><div class="card">العطل<h3>'+holidays+'</h3></div><div class="card">الدفعات<h3>'+countedRows.filter(w=>(w.k==="payment"||w.k==="worker_payment")&&((Number(w.workerPaid)||0)+(Number(w.rec)||0)>0)).length+'</h3></div></div><div class="grid2"><div class="card">المستحق<h3>'+money(due)+'</h3></div><div class="card">واصل<h3 class="ok">'+money(received)+'</h3></div><div class="card">المصروف<h3>'+money(expenses)+'</h3></div><div class="card">السلفات<h3>'+money(advances)+'</h3></div><div class="card">المتبقي بعد السلفات<h3>'+money(due-received-advances)+'</h3></div></div></div>'+
  '<div class="card"><b>🗓️ سجل الشهر — جدول العمليات</b>'+(monthRows.length?monthRows.map(w=>{
   const status=w.isReversal?' <small class="hi">قيد عكسي</small>':w.reversedBy?' <small class="hi">تم عكسه بقيد موثق</small>':'';

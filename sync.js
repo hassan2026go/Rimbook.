@@ -1,6 +1,8 @@
 /* rimbook sync.js - Google Drive + مشاركة + WebRTC */
 
-function getGDriveClientId(){ return RB.data.settings.gdriveClientId || ""; }
+/* ضع هنا Client ID الخاص بتطبيقك مرة واحدة لكي يربط كل مستخدم Google Drive بضغطة واحدة دون إعداد. */
+const BUILTIN_GDRIVE_CLIENT_ID = "";
+function getGDriveClientId(){ return BUILTIN_GDRIVE_CLIENT_ID || RB.data.settings.gdriveClientId || ""; }
 const GDRIVE_SCOPE = "https://www.googleapis.com/auth/drive.file";
 const GDRIVE_FILE = "rimbook-backup.json";
 let gToken = null, gTokenExp = 0;

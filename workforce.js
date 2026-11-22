@@ -77,8 +77,10 @@
   window.rimbookWorkerSummary = summary;
   function workerDailyRate(worker) {
     const rate = Math.max(0,Number(worker.wageRate) || 0);
-    if (worker.wageType === "weekly") return rate / Math.max(1, Number(RB.data.settings.payrollDaysPerWeek) || 6);
-    if (worker.wageType === "monthly") return rate / Math.max(1, Number(RB.data.settings.payrollDaysPerMonth) || 26);
+    if (worker.wageType === "weekly" || worker.wageType === "monthly") {
+      const days = Number(worker.wageType === "weekly" ? RB.data.settings.payrollDaysPerWeek : RB.data.settings.payrollDaysPerMonth);
+      return days > 0 ? rate / days : NaN;
+    }
     return rate;
   }
   function calculateWorkerPay(status,daily,normalHours,lateHours,plannedHours,overtimeHours,overtimeRate,overtimeEnabled,holidayPercent) {
@@ -103,13 +105,9 @@
   window.rimbookCalculateWorkerPay = calculateWorkerPay;
   window.rimbookWorkerDailyRate = function (id) {
     const worker = workers().find(w => String(w.id) === String(id));
-    return worker ? workerDailyRate(worker) : 0;
+    const rate = worker ? workerDailyRate(worker) : 0;
+    return Number.isFinite(rate) ? rate : 0;
   };
-  function selectProjects(id) {
-    return '<option value="">عام — دون مشروع</option>' + projects().map(p =>
-      '<option value="' + safe(p.id) + '" ' + (String(id || "") === String(p.id) ? "selected" : "") + '>' + safe(p.name) + '</option>'
-    ).join("");
-  }
   function selectWorkers(id, activeOnly=true) {
     const rows = workers().filter(w => !activeOnly || w.active !== false);
     return '<option value="">اختر العامل</option>' + rows.map(w =>
@@ -130,7 +128,7 @@
       id: "w" + Date.now().toString(36) + Math.random().toString(36).slice(2,6),
       name, phone, email, jobTitle, wageType, wageRate,
       overtimeRate: Number.isFinite(overtimeRate) && overtimeRate >= 0 ? overtimeRate : null,
-      projectId: val("wf-project") || null, notes: val("wf-notes"),
+      projectId: window.rimbookProjectFromInput("wf-project"), notes: val("wf-notes"),
       active: true, createdAt: Date.now()
     };
     if (!RB.transact(data => { if (!Array.isArray(data.workers)) data.workers=[]; data.workers.push(worker); })) return;
@@ -170,12 +168,19 @@
     go("workday");
   };
 
+  window.rimbookClearWorkerFilter = function () {
+    selectedWorkerId = "";
+    go("workers");
+  };
+
   window.rimbookRegisterWorkday = function () {
     const worker = workers().find(w => String(w.id) === String(val("wd-worker")) && w.active !== false);
     if (!worker) return toast("اختر عاملاً نشطاً");
     const date = val("wd-date") || today(), status = val("wd-status");
     const planned = Number(RB.data.settings.normalHoursPerDay) || 8;
-    const normalHours = num("wd-hours"), lateHours = num("wd-late"), otHours = num("wd-ot");
+    const hoursText = String(val("wd-hours")).trim();
+    const normalHours = hoursText === "" ? planned : num("wd-hours");
+    const lateHours = num("wd-late"), otHours = num("wd-ot");
     if (!validDate(date)) return toast("تحقق من التاريخ وصحته في التقويم");
     if (!["work","holiday","absence"].includes(status)) return toast("اختر حالة الدوام");
     const duplicate=workRows(worker.id).some(x=>x.d===date&&["work","holiday","absence"].includes(x.k)&&!x.isReversal&&!x.reversedBy);
@@ -184,6 +189,8 @@
       return toast("تحقق من الساعات: الساعات العادية لا تتجاوز ساعات الدوام المعتمدة، والتأخير لا يتجاوز ساعات العمل");
     }
     const daily = workerDailyRate(worker);
+    if (!Number.isFinite(daily)) return toast("حدّد «أيام العمل في الأسبوع/الشهر» في الإعدادات أولاً ليُحوَّل أجر هذا العامل إلى قيمة يومية");
+    if (!(daily > 0)) toast("تنبيه: لم يُحدَّد أجر لهذا العامل، لذلك سيكون المستحق صفراً. عدّل ملف العامل وأدخل أجره.");
     const holidayPercent = Math.min(100, Math.max(0, Number(RB.data.settings.holidayPayPercent) || 0));
     const otRate = worker.overtimeRate == null ? Number(RB.data.settings.otRate) || 0 : Number(worker.overtimeRate) || 0;
     const overtimeEnabled = !!RB.data.settings.overtimeEnabled;
@@ -193,7 +200,7 @@
     const labels = {work:"يوم عمل",holiday:"عطلة",absence:"غياب"};
     const row = {
       type:"work", k:status, d:date, ds:labels[status] + " — " + worker.name,
-      workerId:worker.id, person:worker.name, project:val("wd-project") || worker.projectId || null,
+      workerId:worker.id, person:worker.name, project:window.rimbookProjectFromInput("wd-project") || worker.projectId || null,
       normalHours:status==="work"?normalHours:0, lateHours:status==="work"?lateHours:0,
       otHours:status==="work"?otHours:0, overtimePay, overtimeRate:otRate,
       workerDue, workerPaid:0, workerAdvance:0, created:Date.now()
@@ -230,7 +237,9 @@
 
   window.rimbookSavePayrollSettings = function () {
     const week = num("pay-days-week"), month = num("pay-days-month");
-    if (!Number.isInteger(week) || week < 1 || week > 7 || !Number.isInteger(month) || month < 1 || month > 31) {
+    const weekOk = week === 0 || (Number.isInteger(week) && week >= 1 && week <= 7);
+    const monthOk = month === 0 || (Number.isInteger(month) && month >= 1 && month <= 31);
+    if (!weekOk || !monthOk) {
       return toast("أيام العمل يجب أن تكون أرقاماً صحيحة ضمن الحدود");
     }
     if (!RB.transact(data => {
@@ -266,7 +275,7 @@
       '<label class="muted">نظام الأجر</label><select id="wf-type" style="width:100%;margin:4px 0 10px"><option value="daily">يومي</option><option value="weekly">أسبوعي</option><option value="monthly">شهري</option></select>' +
       '<label class="muted">قيمة الأجر حسب النظام المختار</label><input id="wf-rate" type="number" min="0" step="0.01" inputmode="decimal" placeholder="0.00" style="width:100%;margin:4px 0 10px">' +
       '<label class="muted">أجر ساعة الإضافي (اختياري)</label><input id="wf-ot" type="number" min="0" step="0.01" placeholder="يستخدم إعداد الشركة عند تركه فارغاً" style="width:100%;margin:4px 0 10px">' +
-      '<label class="muted">المشروع الافتراضي</label><select id="wf-project" style="width:100%;margin:4px 0 10px">'+selectProjects("")+'</select>' +
+      ''+window.rimbookProjectInput("wf-project","","اسم المشروع (اختياري)")+'' +
       '<label class="muted">ملاحظات</label><textarea id="wf-notes" rows="2" style="width:100%;margin:4px 0 10px"></textarea>' +
       '<button class="p" style="width:100%;min-height:46px" onclick="rimbookAddWorker()">حفظ ملف العامل</button></div>' +
       '<div class="card"><b>قائمة العمال ('+workers().length+')</b>'+(cards||'<p class="muted">لا يوجد عمال بعد. أضف أول ملف أعلاه.</p>')+'</div>';
@@ -278,13 +287,13 @@
     const rows = RB.all("work").filter(x => x.workerId).slice().sort((a,b) => String(b.d||"").localeCompare(String(a.d||""))).slice(0,80);
     const history = rows.map(x => '<div class="item"><span><b>'+safe(x.person||workers().find(w=>w.id===x.workerId)?.name||"عامل")+'</b> · '+safe(x.ds||x.k)+'<br><small class="muted">'+safe(x.d)+' · '+(x.normalHours||0)+' ساعة عادية · '+(x.otHours||0)+' إضافي · المستحق '+money(x.workerDue)+'</small></span></div>').join("");
     return '<div class="card"><b style="font-size:17px">📅 جدول العمل واليومية</b><p class="muted">سجّل الحضور أو العطلة أو الغياب، والساعات العادية والإضافية والتأخير. تُحسب المستحقات وفق نظام أجر العامل وسياسة الشركة.</p>' +
-      '<label class="muted">العامل</label><select id="wd-worker" style="width:100%;margin:4px 0 10px" onchange="rimbookSetSelectedWorker(this.value)">'+selectWorkers(selectedWorkerId)+'</select>' +
+      '<label class="muted">العامل</label><select id="wd-worker" style="width:100%;margin:4px 0 10px" onchange="rimbookSelectWorker(this.value)">'+selectWorkers(selectedWorkerId)+'</select>' +
       '<label class="muted">التاريخ</label><input id="wd-date" type="date" value="'+today()+'" style="width:100%;margin:4px 0 10px">' +
       '<label class="muted">حالة الدوام</label><select id="wd-status" style="width:100%;margin:4px 0 10px"><option value="work">عمل وحضور</option><option value="holiday">عطلة</option><option value="absence">غياب</option></select>' +
-      '<div class="grid2"><div><label class="muted">الساعات العادية</label><input id="wd-hours" type="number" min="0" max="24" step="0.25" value="'+(Number(settings.normalHoursPerDay)||8)+'" style="width:100%;margin:4px 0 10px"></div>' +
-      '<div><label class="muted">ساعات التأخير</label><input id="wd-late" type="number" min="0" max="24" step="0.25" value="0" style="width:100%;margin:4px 0 10px"></div>' +
-      '<div><label class="muted">الساعات الإضافية</label><input id="wd-ot" type="number" min="0" max="24" step="0.25" value="0" style="width:100%;margin:4px 0 10px"></div>' +
-      '<div><label class="muted">المشروع</label><select id="wd-project" style="width:100%;margin:4px 0 10px">'+selectProjects(worker?.projectId||"")+'</select></div></div>' +
+      '<div class="grid2"><div><label class="muted">الساعات العادية</label><input id="wd-hours" type="number" min="0" max="24" step="0.25" placeholder="يوم كامل إن تُرك فارغاً" style="width:100%;margin:4px 0 10px"></div>' +
+      '<div><label class="muted">ساعات التأخير</label><input id="wd-late" type="number" min="0" max="24" step="0.25" placeholder="0" style="width:100%;margin:4px 0 10px"></div>' +
+      '<div><label class="muted">الساعات الإضافية</label><input id="wd-ot" type="number" min="0" max="24" step="0.25" placeholder="0" style="width:100%;margin:4px 0 10px"></div>' +
+      '<div>'+window.rimbookProjectInput("wd-project",worker?.projectId||"","اسم المشروع")+'</div></div>' +
       '<p class="muted">الأجر الأسبوعي يُقسم على أيام العمل الأسبوعية المحددة، والشهري على أيام العمل الشهرية المحددة. الإضافي لا يُحتسب مالياً إلا عند تفعيله في الإعدادات.</p>' +
       '<button class="p" style="width:100%;min-height:46px" onclick="rimbookRegisterWorkday()">حفظ اليومية</button></div>' +
       '<div class="card"><b>آخر سجلات اليومية</b>'+(history||'<p class="muted">لا توجد سجلات عمل بعد.</p>')+'</div>';
@@ -296,7 +305,7 @@
     const rows = selected.map(w => { const s=summary(w.id,month); return '<div class="card"><b>'+safe(w.name)+'</b><p class="muted">'+s.days+' يوم عمل · '+s.holidays+' عطلة · '+s.absences+' غياب · '+s.overtime+' ساعة إضافية</p><div class="grid2"><div>المستحق<h3>'+money(s.due)+'</h3></div><div>المدفوع<h3>'+money(s.paid)+'</h3></div><div>السلف<h3>'+money(s.advances)+'</h3></div><div>المتبقي<h3>'+money(s.balance)+'</h3></div></div></div>'; }).join("");
     const totals = selected.reduce((a,w)=>{const s=summary(w.id,month);a.due+=s.due;a.paid+=s.paid;a.advances+=s.advances;a.balance+=s.balance;return a;},{due:0,paid:0,advances:0,balance:0});
     return '<div class="card"><b style="font-size:17px">💰 كشف الأجور الشهري</b><p class="muted">المستحق والمدفوع والسلف تخص الشهر المحدد، أما الرصيد المتبقي فيشمل الأرصدة المرحلة من الأشهر السابقة حتى نهاية الشهر المختار.</p><label class="muted">الشهر</label><input id="payroll-month" type="month" value="'+safe(month)+'" onchange="render()" style="width:100%;margin:4px 0 10px">' +
-      '<button type="button" onclick="selectedWorkerId=\'\';go(\'workers\')">كل العمال</button> <button type="button" onclick="window.print()">طباعة الكشف</button></div>' +
+      '<button type="button" onclick="rimbookClearWorkerFilter()">كل العمال</button> <button type="button" onclick="window.print()">طباعة الكشف</button></div>' +
       '<div class="grid2"><div class="card">إجمالي المستحق<h3>'+money(totals.due)+'</h3></div><div class="card">إجمالي المدفوع<h3>'+money(totals.paid)+'</h3></div><div class="card">السلف<h3>'+money(totals.advances)+'</h3></div><div class="card">الرصيد المتبقي<h3>'+money(totals.balance)+'</h3></div></div>' +
       (rows||'<div class="card"><p class="muted">لا توجد بيانات أجور لهذا الشهر.</p></div>');
   };
@@ -304,8 +313,8 @@
   window.rimbookWorkforceSettings = function () {
     const s=RB.data.settings;
     return '<div class="card"><b>سياسة دورة الأجور</b><p class="muted">تُستخدم هذه القيم لتحويل الأجر الأسبوعي أو الشهري إلى قيمة يومية عند احتساب اليومية. غيّرها وفق أيام العمل الفعلية في شركتك.</p>' +
-      '<label class="muted">أيام العمل في الأسبوع</label><input id="pay-days-week" type="number" min="1" max="7" step="1" value="'+(Number(s.payrollDaysPerWeek)||6)+'" style="width:100%;margin:4px 0 10px">' +
-      '<label class="muted">أيام العمل في الشهر</label><input id="pay-days-month" type="number" min="1" max="31" step="1" value="'+(Number(s.payrollDaysPerMonth)||26)+'" style="width:100%;margin:4px 0 10px">' +
+      '<label class="muted">أيام العمل في الأسبوع</label><input id="pay-days-week" type="number" min="1" max="7" step="1" placeholder="غير محدد" value="'+(Number(s.payrollDaysPerWeek)||"")+'" style="width:100%;margin:4px 0 10px">' +
+      '<label class="muted">أيام العمل في الشهر</label><input id="pay-days-month" type="number" min="1" max="31" step="1" placeholder="غير محدد" value="'+(Number(s.payrollDaysPerMonth)||"")+'" style="width:100%;margin:4px 0 10px">' +
       '<button class="p" onclick="rimbookSavePayrollSettings()">حفظ سياسة دورة الأجور</button></div>';
   };
   const oldSettings = VIEWS.settings;

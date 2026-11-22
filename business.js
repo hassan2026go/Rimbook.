@@ -2,17 +2,17 @@
 
 /* ==================== 1) تعدد العملات ==================== */
 const BIZ_CURRENCIES = {
-  USD: { symbol: "$", name: "دولار أمريكي", rate: 1 },
-  EUR: { symbol: "€", name: "يورو", rate: 0.92 },
-  TRY: { symbol: "₺", name: "ليرة تركية", rate: 34.5 },
-  SYP: { symbol: "ل.س", name: "ليرة سورية", rate: 13000 },
-  SAR: { symbol: "﷼", name: "ريال سعودي", rate: 3.75 },
-  AED: { symbol: "د.إ", name: "درهم إماراتي", rate: 3.67 },
-  GBP: { symbol: "£", name: "جنيه إسترليني", rate: 0.79 },
-  EGP: { symbol: "ج.م", name: "جنيه مصري", rate: 48.5 }
+  USD: { symbol: "$", name: "دولار أمريكي" },
+  EUR: { symbol: "€", name: "يورو" },
+  TRY: { symbol: "₺", name: "ليرة تركية" },
+  SYP: { symbol: "ل.س", name: "ليرة سورية" },
+  SAR: { symbol: "﷼", name: "ريال سعودي" },
+  AED: { symbol: "د.إ", name: "درهم إماراتي" },
+  GBP: { symbol: "£", name: "جنيه إسترليني" },
+  EGP: { symbol: "ج.م", name: "جنيه مصري" }
 };
 
-let exchangeRates = { ...Object.fromEntries(Object.entries(BIZ_CURRENCIES).map(([k,v])=>[k, v.rate])) };
+let exchangeRates = { USD: 1 };
 let ratesLastUpdate = 0;
 
 /* تحديث أسعار الصرف من API مجاني (يحتاج إنترنت، اختياري) */
@@ -31,8 +31,9 @@ async function updateExchangeRates(){
 
 function convertCurrency(amount, from, to){
   if(from === to) return amount;
-  const usdAmount = amount / (exchangeRates[from] || 1);
-  return usdAmount * (exchangeRates[to] || 1);
+  const fromRate = Number(exchangeRates[from]), toRate = Number(exchangeRates[to]);
+  if(!(fromRate > 0) || !(toRate > 0)) return NaN;
+  return (amount / fromRate) * toRate;
 }
 
 function formatMoney(amount, currency){

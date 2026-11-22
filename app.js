@@ -3,7 +3,7 @@ const RB = (() => {
   const KEY = "rimbook.v6";
   const def = () => ({
     profile: { name: "", role: "employee", phone: "", email: "", city: "", workplace: "", jobTitle: "", birth: "", emergency: "", skills: "", photo: "", about: "" },
-    settings: { theme: "dark", fs: 15, dailyRate: 50, otRate: 10, normalHoursPerDay: 8, holidayPayPercent: 0, overtimeEnabled: false, managerPhone: "", location: "موقع العمل", currency: "$", lang: "ar", enabled: {} },
+    settings: { theme: "dark", fs: 15, dailyRate: 0, otRate: 0, normalHoursPerDay: 0, holidayPayPercent: 0, overtimeEnabled: false, managerPhone: "", location: "موقع العمل", currency: "$", lang: "ar", enabled: {} },
     items: [], habits: [], goals: [], projects: [], workers: [], purchases: [], contacts: [], invoices: [], activeProject: null
   });
   const normalizeData = (source, strict = false) => {
@@ -441,8 +441,9 @@ VIEWS.profile = () => {
 
 function savePayrollSetting(key, value) {
   if (["dailyRate","otRate","normalHoursPerDay","holidayPayPercent"].includes(key)) {
-    const n = Number(value);
-    if (!Number.isFinite(n) || n < 0 || (key === "holidayPayPercent" && n > 100) || (key === "normalHoursPerDay" && (n === 0 || n > 24))) {
+    const blank = String(value).trim() === "";
+    const n = blank ? 0 : Number(value);
+    if (!Number.isFinite(n) || n < 0 || (key === "holidayPayPercent" && n > 100) || (key === "normalHoursPerDay" && (n > 24 || (n === 0 && !blank)))) {
       toast("أدخل قيمة صحيحة");
       render();
       return;
@@ -467,7 +468,7 @@ VIEWS.settings = () => {
   <div class=card><b>💼 سياسة الأجور والحسابات</b>
   <p class=muted>يختار صاحب العمل القواعد المناسبة. تُحفظ الإعدادات على هذا الجهاز وتُستخدم في تسجيلات العمل الجديدة.</p>
   <label class=muted>الأجر اليومي</label>
-  <input type=number min=0 step=0.01 inputmode=decimal value="${Number(s.dailyRate)||0}" onchange="savePayrollSetting('dailyRate',this.value)" style="width:100%;margin:4px 0 12px">
+  <input type=number min=0 step=0.01 inputmode=decimal value="${Number(s.dailyRate)||""}" placeholder="0" onchange="savePayrollSetting('dailyRate',this.value)" style="width:100%;margin:4px 0 12px">
   <label class=muted>احتساب العطلة</label>
   <select style="width:100%;margin:4px 0 12px" value="${holidayPay}" onchange="savePayrollSetting('holidayPayPercent',this.value)">
     <option value=0 ${holidayPay===0?"selected":""}>غير مدفوعة (0%)</option>
@@ -476,9 +477,9 @@ VIEWS.settings = () => {
   </select>
   <label class=muted style="display:flex;align-items:center;gap:8px;margin:4px 0 12px"><input type=checkbox ${s.overtimeEnabled?"checked":""} onchange="savePayrollSetting('overtimeEnabled',this.checked)"> تفعيل سياسة العمل الإضافي</label>
   <label class=muted>عدد ساعات العمل العادية في اليوم</label>
-  <input type=number min=1 max=24 step=0.5 value="${Number(s.normalHoursPerDay)||8}" onchange="savePayrollSetting('normalHoursPerDay',this.value)" style="width:100%;margin:4px 0 12px">
+  <input type=number min=1 max=24 step=0.5 value="${Number(s.normalHoursPerDay)||""}" placeholder="غير محدد" onchange="savePayrollSetting('normalHoursPerDay',this.value)" style="width:100%;margin:4px 0 12px">
   <label class=muted>أجر ساعة العمل الإضافي</label>
-  <input type=number min=0 step=0.01 value="${Number(s.otRate)||0}" onchange="savePayrollSetting('otRate',this.value)" style="width:100%;margin:4px 0 12px">
+  <input type=number min=0 step=0.01 value="${Number(s.otRate)||""}" placeholder="0" onchange="savePayrollSetting('otRate',this.value)" style="width:100%;margin:4px 0 12px">
   <p class=muted>ملاحظة: سياسة الساعات الإضافية تُحفظ الآن، ويُفعّل احتسابها تلقائياً عندما يُسجّل عدد ساعات إضافية للحركة. لا تُضاف ساعات أو مبالغ إضافية من تلقاء نفسها.</p>
   <p class=muted>الدفعات تخصم من المستحق، والسلف تخصم من رصيد العامل، أما مصروفات الشركة فتظل منفصلة ولا تخصم من أجر العامل تلقائياً.</p>
   </div>`;

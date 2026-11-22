@@ -80,7 +80,7 @@
 
   window.addRimbookPurchase = function () {
     const item=val("buy-item"),date=val("buy-date")||today(),qty=number("buy-qty"),unitPrice=number("buy-price");
-    const paidNow=parseAmount(val("buy-paid")),projectId=val("buy-project")||null,contactId=val("buy-supplier")||null;
+    const paidNow=parseAmount(val("buy-paid")),projectId=window.rimbookProjectFromInput("buy-project"),contactId=val("buy-supplier")||null;
     const supplierName=val("buy-supplier-name")||(contacts().find(c=>String(c.id)===String(contactId))?.name||"");
     const total=moneyValue(qty*unitPrice);
     if(!item)return toast("اكتب اسم المادة أو المشتريات");
@@ -144,7 +144,6 @@
     const total=rows.reduce((sum,p)=>sum+netCost(p),0);
     const paidTotal=rows.reduce((sum,p)=>sum+Math.max(0,paid(p)-refunded(p)),0);
     const outstanding=active.reduce((sum,p)=>sum+remaining(p),0);
-    const projectOptions='<option value="">عام — دون مشروع</option>'+projects().map(p=>'<option value="'+safe(p.id)+'">'+safe(p.name)+'</option>').join("");
     const supplierOptions='<option value="">مورد غير مسجل</option>'+contacts().filter(c=>c.type==="supplier"||c.kind==="supplier"||c.role==="supplier").map(c=>'<option value="'+safe(c.id)+'">'+safe(c.name)+'</option>').join("");
     const cards=rows.map(p=>{
       const cancelled=p.status==="cancelled";
@@ -161,10 +160,10 @@
       '<div class="grid3"><div class="card">التكلفة الصافية<h3>'+money(total)+'</h3></div><div class="card">المدفوع<h3>'+money(paidTotal)+'</h3></div><div class="card">المتبقي للموردين<h3>'+money(outstanding)+'</h3></div></div></div>'+
       '<div class="card"><b>تسجيل شراء جديد</b><label class="muted">المادة أو الخدمة</label><input id="buy-item" maxlength="160" placeholder="مثلاً: إسمنت، كابلات، معدات" style="width:100%;margin:4px 0 10px">'+
       '<label class="muted">المورد</label><select id="buy-supplier" style="width:100%;margin:4px 0 8px">'+supplierOptions+'</select><input id="buy-supplier-name" placeholder="اسم المورد إذا لم يكن مسجلاً" style="width:100%;margin:4px 0 10px">'+
-      '<label class="muted">المشروع</label><select id="buy-project" style="width:100%;margin:4px 0 10px">'+projectOptions+'</select>'+
+      ''+window.rimbookProjectInput("buy-project","","اسم المشروع (اختياري)")+''+
       '<div class="grid2"><div><label class="muted">التاريخ</label><input id="buy-date" type="date" value="'+today()+'" style="width:100%;margin:4px 0 10px"></div><div><label class="muted">رقم فاتورة المورد</label><input id="buy-invoice" placeholder="اختياري" style="width:100%;margin:4px 0 10px"></div>'+
-      '<div><label class="muted">الكمية</label><input id="buy-qty" type="number" min="0.001" step="0.001" value="1" oninput="previewPurchaseTotal()" style="width:100%;margin:4px 0 10px"></div><div><label class="muted">الوحدة</label><input id="buy-unit" value="قطعة" placeholder="قطعة، متر، كغ..." style="width:100%;margin:4px 0 10px"></div>'+
-      '<div><label class="muted">سعر الوحدة</label><input id="buy-price" type="number" min="0" step="0.01" value="0" oninput="previewPurchaseTotal()" style="width:100%;margin:4px 0 10px"></div><div><label class="muted">المدفوع الآن</label><input id="buy-paid" type="number" min="0" step="0.01" value="0" style="width:100%;margin:4px 0 10px"></div></div>'+
+      '<div><label class="muted">الكمية</label><input id="buy-qty" type="number" min="0.001" step="0.001" placeholder="0" oninput="previewPurchaseTotal()" style="width:100%;margin:4px 0 10px"></div><div><label class="muted">الوحدة</label><input id="buy-unit" value="قطعة" placeholder="قطعة، متر، كغ..." style="width:100%;margin:4px 0 10px"></div>'+
+      '<div><label class="muted">سعر الوحدة</label><input id="buy-price" type="number" min="0" step="0.01" placeholder="0" oninput="previewPurchaseTotal()" style="width:100%;margin:4px 0 10px"></div><div><label class="muted">المدفوع الآن</label><input id="buy-paid" type="number" min="0" step="0.01" placeholder="0" style="width:100%;margin:4px 0 10px"></div></div>'+
       '<p>الإجمالي المتوقع: <b id="buy-total">'+money(0)+'</b></p><label class="muted">ملاحظات</label><textarea id="buy-notes" rows="2" style="width:100%;margin:4px 0 10px"></textarea>'+
       '<button class="p" style="width:100%;min-height:46px" onclick="addRimbookPurchase()">حفظ عملية الشراء</button></div>'+
       '<div class="card"><b>سجل المشتريات ('+rows.length+')</b>'+(cards||'<p class="muted">لا توجد مشتريات مسجلة بعد.</p>')+'</div>';

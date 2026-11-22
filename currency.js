@@ -12,15 +12,18 @@ const CURRENCIES = {
 };
 
 /* عدد وحدات العملة مقابل دولار أمريكي واحد؛ نفس convention المستخدم في أسعار API. */
-const DEFAULT_RATES = {
-  USD: 1, EUR: 0.92, TRY: 34.5, SAR: 3.75,
-  AED: 3.67, SYP: 13000, EGP: 48.5, JOD: 0.71
-};
+/* لا توجد أسعار صرف افتراضية: يُدخلها المستخدم بنفسه أو يجلبها بزر «تحديث تلقائي». */
+const DEFAULT_RATES = { USD: 1 };
 
 function getRates(){
   return Object.assign({}, DEFAULT_RATES, RB.data.settings.rates || {});
 }
 function setRate(cur, rate){
+  if(cur !== "USD" && Object.prototype.hasOwnProperty.call(CURRENCIES,cur) && String(rate).trim() === ""){
+    if(RB.data.settings.rates) delete RB.data.settings.rates[cur];
+    RB.save();
+    return true;
+  }
   const value=Number(rate);
   if(!Object.prototype.hasOwnProperty.call(CURRENCIES,cur) || !Number.isFinite(value) || value<=0){
     toast("أدخل سعر صرف موجباً وصحيحاً");
@@ -81,7 +84,7 @@ function ratesSection(){
       ${Object.entries(CURRENCIES).map(([code, c]) => `
         <div style="flex:1;min-width:140px;margin-bottom:6px">
           <label class=muted>${c.flag} ${c.name}</label><br>
-          <input type=number step=0.0001 value="${rates[code]}" onchange="setRate('${code}',+this.value)" style="width:100%">
+          <input type=number step=0.0001 value="${rates[code] ?? ""}" placeholder="أدخل السعر" onchange="setRate('${code}',this.value)" style="width:100%">
         </div>`).join("")}
     </div>
     <div class=row style="margin-top:10px">

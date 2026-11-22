@@ -8,9 +8,6 @@
   const today = () => iso(new Date());
   const safe = value => esc(String(value ?? ""));
   const projects = () => Array.isArray(RB.data.projects) ? RB.data.projects : [];
-  const projectOptions = () => '<option value="">عام — غير مرتبط بمشروع</option>' +
-    projects().map(p => '<option value="' + safe(p.id) + '" ' +
-      (RB.data.activeProject === p.id ? "selected" : "") + '>' + safe(p.name) + '</option>').join("");
   const records = () => RB.all("note").concat(RB.all("event"))
     .slice().sort((a, b) => String(b.d || "").localeCompare(String(a.d || "")) ||
       Number(b.created || 0) - Number(a.created || 0));
@@ -29,7 +26,7 @@
     const title = value("nb-title");
     const date = value("nb-date") || today();
     const time = value("nb-time");
-    const project = value("nb-project") || null;
+    const project = window.rimbookProjectFromInput("nb-project");
     if (mode === "note") {
       const body = value("nb-body");
       if (!body) return toast("اكتب نص الملاحظة أولاً");
@@ -121,7 +118,7 @@
       '<button type="button" class="' + (mode === "note" ? "p" : "") + '" onclick="notebookSetMode(\'note\')">📝 ملاحظة</button>' +
       '<button type="button" class="' + (mode === "appointment" ? "p" : "") + '" onclick="notebookSetMode(\'appointment\')">📅 موعد</button>' +
       '<button type="button" class="' + (mode === "reminder" ? "p" : "") + '" onclick="notebookSetMode(\'reminder\')">⏰ تذكير</button></div>' +
-      form + '<label class="muted" for="nb-project">المشروع (اختياري)</label><select id="nb-project" style="width:100%;margin:4px 0 12px">' + projectOptions() + '</select>' +
+      form + '' + window.rimbookProjectInput("nb-project", "", "اسم المشروع (اختياري)") + '' +
       '<button class="p" type="button" style="width:100%;min-height:46px" onclick="notebookAdd()">حفظ السجل</button></div>' +
       '<div class="card"><b>السجل المحفوظ (' + rows.length + ')</b>' +
       (list || '<p class="muted">لا توجد سجلات بعد.</p>') + '</div>';
