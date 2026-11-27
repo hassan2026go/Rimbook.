@@ -1,0 +1,21 @@
+const assert = require("node:assert/strict");
+const P = require("../projects-core.js");
+let n = 0; const ctx = () => ({ id: "p" + (++n), now: 1700000000000 + n });
+let s = P.emptyStore();
+const ok = r => { assert.ok(r.ok, r.error); s = r.store; return r; };
+const a = ok(P.createProject(s, { name: "فيلا", client: "س", bookId: "bk1" }, ctx())).project;
+assert.equal(P.createProject(s, { name: " فيلا " }, ctx()).ok, false, "duplicate name");
+const b = ok(P.createProject(s, { name: "مبنى", bookId: "bk2" }, ctx())).project;
+assert.equal(P.updateProject(s, b.id, { bookId: "bk1" }, ctx()).ok, false, "one account cannot serve two projects");
+ok(P.addFile(s, a.id, { title: "قرار", body: "نص" }, ctx())); assert.equal(s.projects[0].files.length, 1); assert.equal(s.projects[1].files.length, 0);
+assert.equal(P.addFile(s, a.id, { title: "", body: "" }, ctx()).ok, false);
+const fid = s.projects[0].files[0].id; ok(P.editFile(s, a.id, fid, { title: "قرار 2", body: "x" })); ok(P.deleteFile(s, a.id, fid)); assert.equal(s.projects[0].files.length, 0);
+ok(P.setStatus(s, a.id, "archived", ctx())); assert.equal(P.setStatus(s, a.id, "weird", ctx()).ok, false);
+ok(P.createProject(s, { name: "فيلا" }, ctx()));                       // an archived project's name can be reused
+const env = JSON.parse(JSON.stringify(P.makeEnvelope(s, 1)));
+assert.ok(P.verifyEnvelope(env).ok); env.data.projects[0].name = "مغيّر"; assert.equal(P.verifyEnvelope(env).ok, false);
+const rep = P.importEnvelope(P.emptyStore(), JSON.parse(JSON.stringify(P.makeEnvelope(s, 1))), "replace", ctx()); assert.ok(rep.ok); assert.equal(rep.store.projects.length, s.projects.length);
+const app = P.importEnvelope(s, JSON.parse(JSON.stringify(P.makeEnvelope(s, 1))), "append", ctx()); assert.ok(app.ok, app.error);
+assert.ok(app.store.projects.slice(s.projects.length).every(p => p.bookId === null), "appended copies never reuse another store's account link");
+assert.equal(P.validateStore({ version: 1, audit: [], projects: [{ id: "a'b", name: "x", status: "active", files: [] }] }).ok, false, "ids must be inert");
+console.log("Projects core tests passed.");
