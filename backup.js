@@ -30,6 +30,13 @@
     }
     return btoa(binary);
   }
+  function walkAttachmentRefs(value, visit) {
+    if (!value || typeof value !== "object") return;
+    if (!Array.isArray(value) && typeof value.aid === "string") visit(value);
+    if (Array.isArray(value)) value.forEach(child => walkAttachmentRefs(child, visit));
+    else Object.values(value).forEach(child => walkAttachmentRefs(child, visit));
+  }
+
   function base64ToBlob(base64, type) {
     const binary = atob(base64);
     const bytes = new Uint8Array(binary.length);
@@ -42,9 +49,9 @@
     const appData = JSON.parse(JSON.stringify(RB.data));
     for (const key of SENSITIVE_SETTINGS) delete appData.settings[key];
     const refs = new Map();
-    (appData.items || []).forEach(item => (item.attachments || []).forEach(att => {
+    walkAttachmentRefs(appData.items || [], att => {
       if (att && att.aid) refs.set(String(att.aid), att);
-    }));
+    });
     const attachments = [];
     const maxTotalAttachmentBytes = Number.isFinite(Number(options.maxTotalAttachmentBytes))
       ? Math.max(0, Number(options.maxTotalAttachmentBytes)) : Infinity;
@@ -82,11 +89,18 @@
       if (row.attachments != null && !Array.isArray(row.attachments)) {
         throw new Error("قائمة مرفقات أحد السجلات غير صالحة");
       }
+    }
+    walkAttachmentRefs(payload.appData.items, ref => {
+      if (typeof ref.aid !== "string" || !ref.aid.trim()) {
+        throw new Error("مرجع مرفق غير صالح داخل بيانات التطبيق");
+      }
+      referenced.add(ref.aid);
+    });
+    for (const row of payload.appData.items) {
       for (const ref of row.attachments || []) {
         if (!ref || typeof ref.aid !== "string" || !ref.aid.trim()) {
           throw new Error("مرجع مرفق غير صالح داخل بيانات التطبيق");
         }
-        referenced.add(ref.aid);
       }
     }
     if (payload.attachments.length > 10000) throw new Error("عدد المرفقات في النسخة يتجاوز الحد الآمن");

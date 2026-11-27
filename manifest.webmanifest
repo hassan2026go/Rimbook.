@@ -24,5 +24,19 @@
       "type": "image/png",
       "purpose": "any"
     }
+  ],
+  "shortcuts": [
+    {
+      "name": "مفكرتي اليومية",
+      "short_name": "اليوم",
+      "url": "./index.html#diary",
+      "description": "تسجيل سريع لليوم بالصوت أو الكتابة"
+    },
+    {
+      "name": "تقويم المفكرة",
+      "short_name": "التقويم",
+      "url": "./index.html#diary-calendar",
+      "description": "عرض التقويم"
+    }
   ]
 }

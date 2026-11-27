@@ -3,7 +3,7 @@ const RB = (() => {
   const KEY = "rimbook.v6";
   const def = () => ({
     profile: { name: "", role: "employee", phone: "", email: "", city: "", workplace: "", jobTitle: "", birth: "", emergency: "", skills: "", photo: "", about: "" },
-    settings: { theme: "dark", fs: 15, dailyRate: 0, otRate: 0, normalHoursPerDay: 0, holidayPayPercent: 0, overtimeEnabled: false, managerPhone: "", location: "موقع العمل", currency: "$", lang: "ar", enabled: {} },
+    settings: { theme: "dark", fs: 15, overtimeEnabled: false, managerPhone: "", location: "موقع العمل", currency: "$", lang: "ar", enabled: {} },
     items: [], habits: [], goals: [], projects: [], workers: [], purchases: [], contacts: [], invoices: [], activeProject: null
   });
   const normalizeData = (source, strict = false) => {
@@ -71,9 +71,32 @@ const RB = (() => {
       return false;
     }
   };
-  const transact = mutator => {
+  const transact = (mutator, options = {}) => {
     try {
+      const protectedTypes = new Set(["work", "voice_log", "ledger_note"]);
+      const before = options.allowReplace ? null : new Map(
+        data.items.filter(row => protectedTypes.has(row.type)).map(row => [String(row.id), JSON.stringify(row)])
+      );
       mutator(data);
+      if (before) {
+        const after = new Map(data.items.filter(row => protectedTypes.has(row.type)).map(row => [String(row.id), JSON.stringify(row)]));
+        const allowedDeletes = new Set((options.allowDeleteIds || []).map(String));
+        for (const [id, snapshot] of before) {
+          if (!after.has(id)) {
+            const prior = JSON.parse(snapshot);
+            const archived = data.items.some(row => row.type === "voice_archive" && String(row.sourceId) === id);
+            if (!(allowedDeletes.has(id) && prior.type === "voice_log" && archived)) {
+              restoreLastGood();
+              if (typeof toast === "function") toast("حماية السجل: لا يمكن تعديل أو حذف حركة أو ملاحظة أصلية. أضف توضيحاً مستقلاً أو رحّل نسخة أولاً.");
+              return false;
+            }
+          } else if (after.get(id) !== snapshot) {
+            restoreLastGood();
+            if (typeof toast === "function") toast("حماية السجل: الحركة الأصلية والملاحظة المحفوظة لا تقبلان التعديل.");
+            return false;
+          }
+        }
+      }
       return save();
     } catch (e) {
       restoreLastGood();
@@ -91,18 +114,31 @@ const RB = (() => {
       return ok ? row : null;
     },
     patch(id, p) {
+      const target = data.items.find(x => String(x.id) === String(id));
+      if (target && ["work", "voice_log", "ledger_note"].includes(target.type)) {
+        toast("هذا سجل محفوظ لا يقبل التعديل. أضف ملاحظة مستقلة لتوضيح أي خطأ.");
+        return false;
+      }
       let found = false;
-      const ok = transact(d => { const i = d.items.find(x => x.id === id); if (i) { Object.assign(i, p); found = true; } });
+      const ok = transact(d => { const i = d.items.find(x => String(x.id) === String(id)); if (i) { Object.assign(i, p); found = true; } });
       return ok && found;
     },
     remove(id) {
       const target = data.items.find(x => String(x.id) === String(id));
-      if (target && target.type === "work") {
-        toast("لا يمكن حذف حركة عمل أو حساب. استخدم تصحيح الحركة بقيد عكسي مع ذكر السبب للحفاظ على السجل المالي.");
+      if (target && ["work", "voice_log", "ledger_note"].includes(target.type)) {
+        toast(target.type === "work" ? "لا يمكن حذف حركة مالية من دفتر الحسابات." : "لا يُحذف هذا السجل من المسار العام؛ استخدم إجراء الحذف المؤكد بعد الاحتفاظ بنسخة.");
         return false;
       }
       const before = data.items.length;
-      const ok = transact(d => { d.items = d.items.filter(x => x.id !== id); });
+      const ok = transact(d => { d.items = d.items.filter(x => String(x.id) !== String(id)); });
+      return ok && data.items.length < before;
+    },
+    removeVoiceLog(id, confirmation) {
+      const target = data.items.find(x => String(x.id) === String(id) && x.type === "voice_log");
+      const archived = data.items.some(x => x.type === "voice_archive" && String(x.sourceId) === String(id));
+      if (!target || confirmation !== true || !archived) return false;
+      const before = data.items.length;
+      const ok = transact(d => { d.items = d.items.filter(x => !(String(x.id) === String(id) && x.type === "voice_log")); }, { allowDeleteIds: [id] });
       return ok && data.items.length < before;
     },
     save,
@@ -111,7 +147,7 @@ const RB = (() => {
         const replacement = normalizeData(obj, true);
         Object.keys(d).forEach(k => delete d[k]);
         Object.assign(d, replacement);
-      });
+      }, { allowReplace: true });
     },
     async storageStatus() {
       try {
@@ -137,7 +173,7 @@ const iso = d => new Date(d - d.getTimezoneOffset()*6e4).toISOString().slice(0,1
 const fmt = s => String(Math.floor(s/60)).padStart(2,"0")+":"+String(s%60).padStart(2,"0");
 
 const ROLES = {
-  employee: { label: "موظف", tip: "رتّب مهامك", tabs: ["home","projects","agenda","tasks","ledger","profile","settings","stats","sync","integrations"] },
+  employee: { label: "مدير / إدارة", tip: "أدر أعمالك", tabs: ["home","projects","agenda","tasks","ledger","profile","settings","stats","sync","integrations"] },
   worker: { label: "عامل", tip: "سجّل عملك", tabs: ["home","projects","ledger","tasks","profile","settings","stats","sync","integrations"] }
 };
 const TABS = { home:["🏠","الرئيسية"], projects:["📁","المشاريع"], agenda:["📅","المفكرة"], tasks:["✅","المهام"], ledger:["💼","العمل"], profile:["👤","الملف"], settings:["⚙️","الإعدادات"], stats:["📊","الإحصاء"], sync:["🔄","نسخ ونقل"], integrations:["🧩","الإضافات"] };
@@ -158,8 +194,40 @@ async function requestRimbookPersistence() {
 }
 function workerCanOpenView(target) {
   if (RB.data.profile.role !== "worker") return true;
-  return ["home","projects","agenda","tasks","ledger","voice","notebook","profile","settings","more","about","stats","sync","integrations","contacts","purchases","invoices","rates","share"].includes(target);
+  return ["home","projects","agenda","tasks","ledger","voice","notebook","profile","settings","more","about","stats","sync","integrations","contacts","purchases","invoices","share","ledgers","calculator","calendar","employment","myprojects","diary"].includes(target);
 }
+/* Ownership scopes. A worker account never needs a worker record:
+   - admin: manager records (everything that is not personal)
+   - worker: account optionally linked, by the worker's own choice, to a worker record
+   - personal: worker account with no link; their records carry scope:"personal" and never mix with admin data */
+window.rimbookOwner = (function () {
+  const prof = () => (RB.data && RB.data.profile) || {};
+  const linked = () => prof().role !== "worker" ? null :
+    ((RB.data.workers || []).find(w => String(w.id) === String(prof().workerId || "") && w.active !== false) || null);
+  const kind = () => prof().role !== "worker" ? "admin" : (linked() ? "worker" : "personal");
+  return {
+    kind, linked,
+    owns(row) {
+      if (!row) return false;
+      const k = kind();
+      if (k === "admin") return row.scope !== "personal";
+      if (k === "worker") return row.scope !== "personal" && String(row.workerId || "") === String(linked().id);
+      return row.scope === "personal";
+    },
+    fields() {
+      const k = kind();
+      if (k === "worker") return { workerId: linked().id };
+      if (k === "personal") return { workerId: null, scope: "personal" };
+      return { workerId: null };
+    },
+    stamp(row) {
+      const k = kind();
+      if (k === "worker") { row.workerId = linked().id; row.person = linked().name; }
+      else if (k === "personal") { row.scope = "personal"; row.workerId = null; }
+      return row;
+    }
+  };
+})();
 function go(t){
   if (!workerCanOpenView(t)) { toast("هذه الشاشة مخصصة للإدارة وليست متاحة في واجهة العامل."); return; }
   view = t; render(); window.scrollTo(0,0);
@@ -193,14 +261,13 @@ function searchRimbook(raw) {
   (RB.data.items||[]).forEach(x=>{
     const type=x.type||"سجل";
     const labels={task:"مهمة",event:"موعد",appointment:"موعد",note:"ملاحظة",work:"سجل عمل",voice_log:"تسجيل صوتي",reminder:"تذكير"};
-    const routes={task:"tasks",event:"agenda",appointment:"agenda",reminder:"agenda",note:"notes",work:"voice",voice_log:"voice"};
+    const routes={task:"tasks",event:"agenda",appointment:"agenda",reminder:"agenda",note:"notebook",work:"voice",voice_log:"voice"};
     const route=routes[type]||"home";
     const title=x.title||x.name||x.ds||x.body||labels[type]||"سجل";
     const subtitle=[labels[type]||type,x.d||x.date||""].filter(Boolean).join(" · ");
     add(type,x.id,title,subtitle,x,route);
   });
   (RB.data.contacts||[]).forEach(c=>add("contact",c.id,c.name||"جهة اتصال",[c.company,c.phone].filter(Boolean).join(" · "),c,"contacts"));
-  (RB.data.goals||[]).forEach(g=>add("goal",g.id,g.name||"هدف","هدف",g,"goals"));
   (RB.data.invoices||[]).forEach(inv=>add("invoice",inv.id,"فاتورة #"+(inv.number||""),[inv.client,inv.date].filter(Boolean).join(" · "),inv,"invoices"));
   const shown=results.slice(0,20);
   box.innerHTML=shown.length
@@ -253,6 +320,13 @@ function render(){
   document.body.style.fontSize = d.settings.fs + "px";
   $("#tabs").innerHTML = ROLES[d.profile.role].tabs.map(t=>`<button class="${t===view?"on":""}" onclick="go('${t}')"><span>${TABS[t][0]}</span>${TABS[t][1]}</button>`).join("");
   $("#view").innerHTML = VIEWS[view] ? VIEWS[view]() : "";
+  const footer = $("#appFooter");
+  if (footer) {
+    const hideFooter = view === "about";
+    footer.hidden = hideFooter;
+    if (hideFooter) footer.style.setProperty("display", "none", "important");
+    else footer.style.removeProperty("display");
+  }
 }
 
 /* ===== المشاريع ===== */
@@ -335,11 +409,6 @@ function normalizeProfileDigits(value) {
 function saveProfileField(key, value) {
   const allowed = ["name","role","workerId","phone","email","city","workplace","jobTitle","birth","emergency","skills","about"];
   if (!allowed.includes(key)) return;
-  if (RB.data.profile.role === "worker" && key === "role") {
-    toast("لا يمكن تغيير صفة العامل أو ملفه المرتبط من واجهة العامل. اطلب من الإدارة ضبط الربط.");
-    render();
-    return;
-  }
   const v = String(value ?? "").trim();
   if (key === "email" && v && !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(v)) {
     toast("صيغة البريد الإلكتروني غير صحيحة"); render(); return;
@@ -355,12 +424,21 @@ function saveProfileField(key, value) {
     toast("ملف العامل المحدد غير موجود أو غير نشط"); render(); return;
   }
   RB.data.profile[key] = key === "phone" ? normalizeProfileDigits(v) : v;
+  if (key === "role" && v === "employee") RB.data.profile.workerId = "";
   if (!RB.save()) { toast("تعذر الحفظ: مساحة التخزين في الجهاز ممتلئة"); return; }
   if (key === "role" || key === "workerId") render();
   if (key === "name") { const heading = $("#profile-display-name"); if (heading) heading.textContent = RB.data.profile.name || "الملف الشخصي"; }
   toast("تم حفظ بيانات الملف الشخصي");
 }
 window.saveProfileForm = function () { if (!RB.save()) return toast("تعذر حفظ الملف الشخصي: تحقق من مساحة التخزين"); render(); toast("تم حفظ جميع بيانات الملف الشخصي"); };
+window.clearProfileData = function () {
+  if (!confirm("سيتم حذف بيانات الملف الشخصي والصورة وربط العامل فقط. لن تُحذف المشاريع أو سجلات العمل أو الدفعات. هل تريد المتابعة؟")) return;
+  const previous = JSON.parse(JSON.stringify(RB.data.profile || {}));
+  RB.data.profile = { name:"", role:"employee", phone:"", email:"", city:"", workplace:"", jobTitle:"", birth:"", emergency:"", skills:"", photo:"", about:"", workerId:"" };
+  if (!RB.save()) { RB.data.profile = previous; toast("تعذر حذف بيانات الملف الشخصي؛ لم يتغير شيء."); return; }
+  render();
+  toast("تم حذف بيانات الملف الشخصي وربط العامل فقط.");
+};
 function removeProfilePhoto() {
   if (!RB.data.profile.photo) return;
   if (!confirm("هل تريد حذف الصورة الشخصية؟")) return;
@@ -414,7 +492,7 @@ VIEWS.profile = () => {
   const field = (label, key, type, placeholder) =>
     '<label class="muted" for="profile-' + key + '">' + label + '</label>' +
     '<input id="profile-' + key + '" type="' + (type || "text") + '" value="' + esc(p[key] || "") + '" placeholder="' + (placeholder || "") +
-    '" onchange="saveProfileField(\'' + key + '\',this.value)" style="width:100%;margin:4px 0 12px">';
+    '" onchange="saveProfileField(&quot;' + key + '&quot;,this.value)" style="width:100%;margin:4px 0 12px">';
   return '<div class="card" style="text-align:center">' + avatar +
     '<h2 id="profile-display-name" style="margin:8px 0">' + esc(p.name || "الملف الشخصي") + '</h2>' +
     '<p class="muted">بياناتك محفوظة على هذا الجهاز، ولا تُرسل إلى أي خدمة تلقائياً.</p>' +
@@ -424,7 +502,7 @@ VIEWS.profile = () => {
     '</div><div class="card"><b>👤 المعلومات الأساسية</b>' +
     field("الاسم الكامل","name","text","اكتب اسمك الكامل") +
     '<label class="muted" for="profile-role">الصفة</label><select id="profile-role" onchange="saveProfileField(\'role\',this.value)" style="width:100%;margin:4px 0 12px">' +
-    '<option value="employee" ' + (p.role==="employee"?"selected":"") + '>موظف</option>' +
+    '<option value="employee" ' + (p.role==="employee"?"selected":"") + '>مدير / إدارة</option>' +
     '<option value="worker" ' + (p.role==="worker"?"selected":"") + '>عامل</option></select>' +
     field("رقم الهاتف","phone","tel","مع رمز الدولة إن أمكن") +
     field("البريد الإلكتروني","email","email","example@email.com") +
@@ -436,19 +514,28 @@ VIEWS.profile = () => {
     field("تاريخ الميلاد (اختياري)","birth","date","") +
     '<label class="muted" for="profile-skills">المهارات</label><textarea id="profile-skills" rows="2" style="width:100%;margin:4px 0 12px" onchange="saveProfileField(\'skills\',this.value)">' + esc(p.skills || "") + '</textarea>' +
     '</div><div class="card"><b>📝 نبذة شخصية</b><textarea rows="3" placeholder="اكتب نبذة مختصرة عنك" style="width:100%;margin-top:6px" onchange="saveProfileField(\'about\',this.value)">' + esc(p.about || "") + '</textarea></div>' +
-    '<div class="card"><b>🔒 معلومات طوارئ (اختيارية وخاصة)</b><p class="muted">لا تظهر هذه المعلومات في التقارير العامة أو المشاركات.</p><textarea rows="2" placeholder="اسم شخص للتواصل ورقم هاتفه عند الضرورة" style="width:100%;margin-top:6px" onchange="saveProfileField(\'emergency\',this.value)">' + esc(p.emergency || "") + '</textarea></div>';
+    '<div class="card"><b>🔒 معلومات طوارئ (اختيارية وخاصة)</b><p class="muted">لا تظهر هذه المعلومات في التقارير العامة أو المشاركات.</p><textarea rows="2" placeholder="اسم شخص للتواصل ورقم هاتفه عند الضرورة" style="width:100%;margin-top:6px" onchange="saveProfileField(\'emergency\',this.value)">' + esc(p.emergency || "") + '</textarea></div>' +
+    (p.role === "worker" ? '<div class="card"><b>👷 ربط ملف العامل — اختياري تماماً</b><p class="muted">الربط ليس شرطاً لاستخدام المفكرة أو التسجيل الصوتي أو سجلك الشخصي. هذا الربط يطابق حسابك الشخصي مع سجل العامل الذي أنشأته الإدارة في قسم «العمال». بعد الربط تظهر يومياتك ومستحقاتك ومهامك فقط. إذا لم يظهر اسمك هنا، اطلب من صاحب العمل إنشاء ملف لك أولاً.</p><label class="muted" for="profile-worker-id">اختر ملفك من قائمة العمال النشطين</label><select id="profile-worker-id" style="width:100%;margin:6px 0 10px" onchange="saveProfileField(&quot;workerId&quot;,this.value)"><option value="">— لم أربط ملف عامل بعد —</option>' + (RB.data.workers || []).filter(worker => worker.active !== false).map(worker => '<option value="' + esc(worker.id) + '" ' + (String(p.workerId || "") === String(worker.id) ? "selected" : "") + '>' + esc(worker.name) + (worker.jobTitle ? " — " + esc(worker.jobTitle) : "") + '</option>').join("") + '</select><p class="muted">لا تحتاج هذا الربط لتسجيل صوت شخصي أو حفظ ملاحظة صوتية. يلزم فقط لربط حركات الدوام والأجور باسم عامل محدد.</p></div>' : "") +
+    '<div class="card"><b>إدارة بيانات الملف</b><p class="muted">تُحفظ التعديلات على هذا الجهاز. يمكنك حفظها يدوياً أو حذف بيانات الملف الشخصي فقط؛ لن يحذف ذلك سجلات العمل أو الحسابات.</p><div class="row"><button class="p" type="button" onclick="saveProfileForm()">حفظ التغييرات</button><button class="danger" type="button" onclick="clearProfileData()">حذف بيانات الملف الشخصي</button></div></div>';
 };
 
 function savePayrollSetting(key, value) {
   if (["dailyRate","otRate","normalHoursPerDay","holidayPayPercent"].includes(key)) {
-    const blank = String(value).trim() === "";
-    const n = blank ? 0 : Number(value);
-    if (!Number.isFinite(n) || n < 0 || (key === "holidayPayPercent" && n > 100) || (key === "normalHoursPerDay" && (n > 24 || (n === 0 && !blank)))) {
+    if (String(value ?? "").trim() === "") {
+      delete RB.data.settings[key];
+      if (!RB.save()) return;
+      render();
+      toast("تم مسح القيمة؛ لن تُستخدم قيمة افتراضية");
+      return;
+    }
+    const n = Number(value);
+    if (!Number.isFinite(n) || n < 0 || (key === "holidayPayPercent" && n > 100) || (key === "normalHoursPerDay" && (n === 0 || n > 24))) {
       toast("أدخل قيمة صحيحة");
       render();
       return;
     }
     RB.data.settings[key] = n;
+    RB.data.settings.payrollPolicyConfigured = true;
   } else if (key === "overtimeEnabled") {
     RB.data.settings[key] = !!value;
   }
@@ -457,7 +544,7 @@ function savePayrollSetting(key, value) {
 }
 VIEWS.settings = () => {
   const s = RB.data.settings || {};
-  const holidayPay = Number.isFinite(Number(s.holidayPayPercent)) ? Number(s.holidayPayPercent) : 0;
+  const holidayPay = s.holidayPayPercent == null || s.holidayPayPercent === "" ? null : Number(s.holidayPayPercent);
   return `<div class=card><b>⚙️ الإعدادات العامة</b>
   <div class=row><button type="button" onclick="toggleRimbookTheme()">تبديل المظهر</button></div>
   </div>
@@ -468,18 +555,19 @@ VIEWS.settings = () => {
   <div class=card><b>💼 سياسة الأجور والحسابات</b>
   <p class=muted>يختار صاحب العمل القواعد المناسبة. تُحفظ الإعدادات على هذا الجهاز وتُستخدم في تسجيلات العمل الجديدة.</p>
   <label class=muted>الأجر اليومي</label>
-  <input type=number min=0 step=0.01 inputmode=decimal value="${Number(s.dailyRate)||""}" placeholder="0" onchange="savePayrollSetting('dailyRate',this.value)" style="width:100%;margin:4px 0 12px">
+  <input type=number min=0 step=0.01 inputmode=decimal value="${s.dailyRate==null?"":Number(s.dailyRate)||""}" placeholder="أدخل الأجر اليومي" onchange="savePayrollSetting('dailyRate',this.value)" style="width:100%;margin:4px 0 12px">
   <label class=muted>احتساب العطلة</label>
-  <select style="width:100%;margin:4px 0 12px" value="${holidayPay}" onchange="savePayrollSetting('holidayPayPercent',this.value)">
-    <option value=0 ${holidayPay===0?"selected":""}>غير مدفوعة (0%)</option>
+  <select style="width:100%;margin:4px 0 12px" value="${holidayPay??""}" onchange="savePayrollSetting('holidayPayPercent',this.value)">
+    <option value="" ${holidayPay===null?"selected":""} disabled>اختر سياسة العطلة</option>
+    <option value=0 ${holidayPay===0?"selected":""}>غير مدفوعة</option>
     <option value=50 ${holidayPay===50?"selected":""}>نصف أجر يوم (50%)</option>
     <option value=100 ${holidayPay===100?"selected":""}>أجر يوم كامل (100%)</option>
   </select>
   <label class=muted style="display:flex;align-items:center;gap:8px;margin:4px 0 12px"><input type=checkbox ${s.overtimeEnabled?"checked":""} onchange="savePayrollSetting('overtimeEnabled',this.checked)"> تفعيل سياسة العمل الإضافي</label>
   <label class=muted>عدد ساعات العمل العادية في اليوم</label>
-  <input type=number min=1 max=24 step=0.5 value="${Number(s.normalHoursPerDay)||""}" placeholder="غير محدد" onchange="savePayrollSetting('normalHoursPerDay',this.value)" style="width:100%;margin:4px 0 12px">
+  <input type=number min=1 max=24 step=0.5 value="${s.normalHoursPerDay==null?"":Number(s.normalHoursPerDay)||""}" placeholder="حدد ساعات الدوام" onchange="savePayrollSetting('normalHoursPerDay',this.value)" style="width:100%;margin:4px 0 12px">
   <label class=muted>أجر ساعة العمل الإضافي</label>
-  <input type=number min=0 step=0.01 value="${Number(s.otRate)||""}" placeholder="0" onchange="savePayrollSetting('otRate',this.value)" style="width:100%;margin:4px 0 12px">
+  <input type=number min=0 step=0.01 value="${s.otRate==null?"":Number(s.otRate)||""}" placeholder="أدخل أجر الساعة" onchange="savePayrollSetting('otRate',this.value)" style="width:100%;margin:4px 0 12px">
   <p class=muted>ملاحظة: سياسة الساعات الإضافية تُحفظ الآن، ويُفعّل احتسابها تلقائياً عندما يُسجّل عدد ساعات إضافية للحركة. لا تُضاف ساعات أو مبالغ إضافية من تلقاء نفسها.</p>
   <p class=muted>الدفعات تخصم من المستحق، والسلف تخصم من رصيد العامل، أما مصروفات الشركة فتظل منفصلة ولا تخصم من أجر العامل تلقائياً.</p>
   </div>`;

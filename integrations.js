@@ -14,15 +14,9 @@ const INTEGRATIONS = {
     desc:"إرسال تقرير العمل إلى رقم المدير.",
     fields:[{ key:"managerPhone", label:"رقم واتساب (مع رمز الدولة)", type:"tel" }],
     run:()=>shareW() },
-  webShare: { id:"webShare", cat:"free", icon:"📤", name:"حفظ نسخة في Google Drive أو واتساب أو البريد",
-    desc:"أسهل طريقة لحفظ بياناتك خارج الهاتف: اضغط تشغيل، ثم اختر Google Drive أو أرسل النسخة لنفسك على واتساب أو البريد. لا تحتاج حساباً ولا مفتاحاً.",
+  webShare: { id:"webShare", cat:"free", icon:"📤", name:"مشاركة النظام",
+    desc:"مشاركة الملف عبر البلوتوث / البريد / AirDrop / أي تطبيق.",
     fields:[], run:()=>shareViaAny() },
-  backupReminder: { id:"backupReminder", cat:"free", icon:"🔔", name:"تذكير بالنسخ الاحتياطي",
-    desc:"يعمل تلقائياً: يظهر تنبيه في الرئيسية إذا مرّت 7 أيام دون حفظ نسخة احتياطية. عطّله من هنا إن لم ترده.",
-    fields:[], run:()=>{ const t=RB.data.settings.lastBackupAt; toast(t ? "آخر نسخة احتياطية: " + new Date(t).toLocaleDateString("ar") : "لم تُحفظ نسخة احتياطية بعد"); } },
-  installApp: { id:"installApp", cat:"free", icon:"📲", name:"تثبيت المفكرة على هاتفك",
-    desc:"تعمل كتطبيق كامل على شاشتك الرئيسية، وتفتح بدون إنترنت بعد أول فتح.",
-    fields:[], run:()=>installRimbookApp() },
   webrtc: { id:"webrtc", cat:"free", icon:"🔗", name:"نقل مباشر بين جهازين (WebRTC)",
     desc:"نقل البيانات بين جهازين بلا وسيط.",
     fields:[], run:()=>{ go("sync"); } },
@@ -41,7 +35,7 @@ const INTEGRATIONS = {
       if(!cfg.gdriveClientId) throw new Error("أدخل Client ID");
       return "تم حفظ Client ID فقط؛ لم يُختبر تسجيل الدخول إلى Google Drive بعد.";
     },
-    run:()=>{ if(!getGDriveClientId()) return toast("⚠️ أدخل Client ID أولاً"); gdriveUpload(); } },
+    run:()=>{ if(!RB.data.settings.gdriveClientId) return toast("⚠️ فعّل Google Drive أولاً"); gdriveUpload(); } },
   telegram: { id:"telegram", cat:"keyed", icon:"✈️", name:"Telegram Bot",
     desc:"إرسال تقارير إلى تيليغرام. مجاني عبر @BotFather.",
     help:"1) افتح @BotFather\n2) /newbot\n3) انسخ التوكن\n4) أرسل رسالة للبوت\n5) احصل على chat_id من @userinfobot",
@@ -174,71 +168,15 @@ const INTEGRATIONS = {
         const out = r.choices?.[0]?.message?.content || "";
         toast("🤖 " + out.slice(0, 200));
       } catch(e){ toast("❌ خطأ"); }
-    } }
+    } },
+
 };
 
-const DEFAULT_ON_INTEGRATIONS = ["backupReminder"];
 function isEnabled(id){
   const s = RB.data.settings;
   if(!s.enabled) s.enabled = {};
-  if(DEFAULT_ON_INTEGRATIONS.includes(id) && s.enabled[id] === undefined) return true;
   return !!s.enabled[id];
 }
-
-/* ===== تثبيت التطبيق (PWA) ===== */
-let rimbookInstallEvent = null;
-window.addEventListener("beforeinstallprompt", event => { event.preventDefault(); rimbookInstallEvent = event; });
-window.addEventListener("appinstalled", () => { rimbookInstallEvent = null; });
-async function installRimbookApp(){
-  if(window.matchMedia && window.matchMedia("(display-mode: standalone)").matches) return toast("المفكرة مثبّتة بالفعل على هذا الجهاز");
-  if(window.Capacitor && typeof Capacitor.isNativePlatform === "function" && Capacitor.isNativePlatform()) return toast("أنت تستخدم تطبيق Android المثبّت بالفعل");
-  if(rimbookInstallEvent){
-    rimbookInstallEvent.prompt();
-    try { await rimbookInstallEvent.userChoice; } catch(e){}
-    rimbookInstallEvent = null;
-    return;
-  }
-  alert("لتثبيت المفكرة:\n• Android (Chrome): القائمة ⋮ ← «تثبيت التطبيق» أو «إضافة إلى الشاشة الرئيسية».\n• iPhone (Safari): زر المشاركة ← «إضافة إلى الشاشة الرئيسية».");
-}
-window.installRimbookApp = installRimbookApp;
-
-/* ===== تذكير النسخ الاحتياطي ===== */
-const BACKUP_REMINDER_DAYS = 7, BACKUP_SNOOZE_DAYS = 3, DAY_MS = 86400000;
-function markBackupDone(){
-  RB.transact(data => { data.settings.lastBackupAt = Date.now(); data.settings.backupSnoozeUntil = 0; });
-}
-window.snoozeBackupReminder = function(){
-  RB.transact(data => { data.settings.backupSnoozeUntil = Date.now() + BACKUP_SNOOZE_DAYS * DAY_MS; });
-  render();
-};
-function backupReminderHtml(){
-  const d = RB.data, s = d.settings || {};
-  if(!isEnabled("backupReminder")) return "";
-  const hasData = ["items","workers","projects","purchases","contacts","invoices"].some(k => Array.isArray(d[k]) && d[k].length);
-  if(!hasData) return "";
-  const last = Number(s.lastBackupAt) || 0, now = Date.now();
-  if(last && now - last < BACKUP_REMINDER_DAYS * DAY_MS) return "";
-  if(Number(s.backupSnoozeUntil) > now) return "";
-  const msg = last ? "مرّت " + Math.floor((now - last) / DAY_MS) + " يوماً على آخر نسخة احتياطية." : "لم تحفظ نسخة احتياطية بعد.";
-  return '<div class="card" style="border-right:4px solid var(--warn)"><b>💾 احفظ بياناتك</b><p class="muted">' + msg +
-    ' بياناتك محفوظة على هذا الجهاز فقط؛ إذا فُقد الهاتف أو مُسح التطبيق تضيع. احفظ نسخة في Google Drive أو أرسلها لنفسك.</p>' +
-    '<div class="row"><button class="p" onclick="shareViaAny()">حفظ / مشاركة نسخة الآن</button><button onclick="backupLocal()">تنزيل ملف</button><button onclick="snoozeBackupReminder()">لاحقاً</button></div></div>';
-}
-window.addEventListener("load", () => {
-  ["backupLocal","backupZip","backupEncrypted","gdriveUpload","shareViaAny"].forEach(name => {
-    const original = window[name];
-    if(typeof original !== "function" || original.__rbBackupMark) return;
-    const wrapped = async function(...args){
-      const result = await original.apply(this, args);
-      markBackupDone();
-      return result;
-    };
-    wrapped.__rbBackupMark = true;
-    window[name] = wrapped;
-  });
-  const home = VIEWS.home;
-  if(typeof home === "function") VIEWS.home = function(){ return backupReminderHtml() + home.apply(this, arguments); };
-});
 function toggleIntegration(id, enable){
   const integration = INTEGRATIONS[id];
   if(!integration) return toast("الإضافة غير معروفة");
@@ -266,6 +204,20 @@ async function testIntegration(id){
 }
 
 VIEWS.integrations = () => {
+  const settings = RB.data.settings;
+  const legacyKeys = ["fbApiKey","fbProjectId","myDomain"];
+  const hasLegacy = legacyKeys.some(key => Object.prototype.hasOwnProperty.call(settings,key)) ||
+    !!(settings.enabled && (Object.prototype.hasOwnProperty.call(settings.enabled,"firebase") || Object.prototype.hasOwnProperty.call(settings.enabled,"customDomain")));
+  if(hasLegacy){
+    const cleaned = RB.transact(data => {
+      legacyKeys.forEach(key => { delete data.settings[key]; });
+      if(data.settings.enabled){
+        delete data.settings.enabled.firebase;
+        delete data.settings.enabled.customDomain;
+      }
+    });
+    if(!cleaned) toast("تعذر تنظيف إعدادات Firebase والدومين القديمة؛ أعد فتح الإضافات لاحقاً");
+  }
   const s = RB.data.settings;
   const renderCard = (integ) => {
     const enabled = isEnabled(integ.id);
@@ -277,7 +229,7 @@ VIEWS.integrations = () => {
       </div>
       <p class=muted style="margin:6px 0">${esc(integ.desc)}</p>
       ${integ.help ? `<details><summary class=muted>📖 كيف أفعّلها؟</summary><pre style="white-space:pre-wrap;font-size:11px;background:var(--in);padding:8px;border-radius:8px;margin-top:6px">${esc(integ.help)}</pre></details>` : ""}
-      ${integ.fields.filter(f => !(f.key === "gdriveClientId" && typeof BUILTIN_GDRIVE_CLIENT_ID !== "undefined" && BUILTIN_GDRIVE_CLIENT_ID)).map(f => `
+      ${integ.fields.map(f => `
         <p style="margin:6px 0"><label class=muted>${f.label}</label><br>
         ${f.type === "select"
           ? `<select onchange="saveIntegrationField('${f.key}', this.value)">${f.options.map(o => `<option ${s[f.key]===o?"selected":""}>${o}</option>`).join("")}</select>`

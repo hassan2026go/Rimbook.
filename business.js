@@ -1,6 +1,6 @@
-/* rimbook business.js - الفواتير والعملات والجهات والمرفقات */
+/* Rimbook business tools — invoice currency labels and reporting */
 
-/* ==================== 1) تعدد العملات ==================== */
+/* Currency labels only. No fixed or estimated exchange rates are used. */
 const BIZ_CURRENCIES = {
   USD: { symbol: "$", name: "دولار أمريكي" },
   EUR: { symbol: "€", name: "يورو" },
@@ -12,29 +12,7 @@ const BIZ_CURRENCIES = {
   EGP: { symbol: "ج.م", name: "جنيه مصري" }
 };
 
-let exchangeRates = { USD: 1 };
-let ratesLastUpdate = 0;
-
-/* تحديث أسعار الصرف من API مجاني (يحتاج إنترنت، اختياري) */
-async function updateExchangeRates(){
-  try {
-    const r = await fetch("https://api.exchangerate-api.com/v4/latest/USD").then(r=>r.json());
-    if(r.rates){
-      exchangeRates = { USD: 1, ...r.rates };
-      ratesLastUpdate = Date.now();
-      RB.save();
-      toast("✅ تحديث أسعار الصرف");
-      render();
-    }
-  } catch(e){ toast("⚠️ تعذر التحديث — يستخدم أسعاراً ثابتة"); }
-}
-
-function convertCurrency(amount, from, to){
-  if(from === to) return amount;
-  const fromRate = Number(exchangeRates[from]), toRate = Number(exchangeRates[to]);
-  if(!(fromRate > 0) || !(toRate > 0)) return NaN;
-  return (amount / fromRate) * toRate;
-}
+const toCents = value => { const n=Number(value); return Number.isFinite(n)?Math.round(n*100):0; };
 
 function formatMoney(amount, currency){
   const c = BIZ_CURRENCIES[currency] || { symbol: currency };
@@ -42,32 +20,13 @@ function formatMoney(amount, currency){
 }
 
 /* ==================== 2) جهات الاتصال ==================== */
-function addContact(){
-  const name = $("#ct-name").value.trim(); if(!name) return;
-  if(!RB.data.contacts) RB.data.contacts = [];
-  RB.data.contacts.push({
-    id: Date.now().toString(36),
-    name,
-    type: $("#ct-type").value,
-    phone: $("#ct-phone").value.trim(),
-    email: $("#ct-email").value.trim(),
-    address: $("#ct-address").value.trim(),
-    notes: $("#ct-notes").value.trim(),
-    createdAt: Date.now()
-  });
-  RB.save(); render(); toast("✅ أُضيفت جهة الاتصال");
-}
-function delContact(id){
-  if(!confirm("حذف جهة الاتصال؟")) return;
-  RB.data.contacts = (RB.data.contacts || []).filter(c=>c.id!==id);
-  RB.save(); render();
-}
+/* Contact management lives in contacts.js; keep this module focused on accounting. */
 function contactBalance(cid){
-  let due = 0, rec = 0;
-  RB.all("work").filter(w=>w.contactId===cid).forEach(w=>{
-    due += w.due||0; rec += w.rec||0;
+  let dueCents = 0, receivedCents = 0;
+  RB.all("work").filter(w=>String(w.contactId||"")===String(cid||"")).forEach(w=>{
+    dueCents += toCents(w.due); receivedCents += toCents(w.rec);
   });
-  return { due, rec, rem: due-rec };
+  return { due:dueCents/100, rec:receivedCents/100, rem:(dueCents-receivedCents)/100 };
 }
 
 /* ==================== 3) الفواتير PDF ==================== */
@@ -76,9 +35,10 @@ function generateInvoice(projectId){
   if(!proj) return toast("اختر مشروعاً");
   const works = RB.all("work").filter(w=>w.project===projectId && w.k!=="payment");
   const payments = RB.all("work").filter(w=>w.project===projectId && w.k==="payment");
-  const totalDue = works.reduce((s,w)=>s+(w.due||0),0);
-  const totalPaid = payments.reduce((s,w)=>s+(w.rec||0),0);
-  const remaining = totalDue - totalPaid;
+  const totalDueCents = works.reduce((sum,w)=>sum+toCents(w.due),0);
+  const totalPaidCents = payments.reduce((sum,w)=>sum+toCents(w.rec),0);
+  const totalDue = totalDueCents/100, totalPaid = totalPaidCents/100;
+  const remaining = (totalDueCents-totalPaidCents)/100;
   const contact = proj.contactId ? (RB.data.contacts||[]).find(c=>c.id===proj.contactId) : null;
   const invNum = "INV-" + Date.now().toString(36).toUpperCase().slice(-6);
   const currency = proj.currency || RB.data.settings.currency || "USD";
@@ -173,18 +133,18 @@ function monthlyComparison(){
   for(let i=5; i>=0; i--){
     const d = new Date(now.getFullYear(), now.getMonth()-i, 1);
     const key = d.getFullYear() + "-" + String(d.getMonth()+1).padStart(2,"0");
-    months[key] = { label: d.toLocaleDateString("ar",{month:"short"}), due:0, rec:0, days:0, ot:0 };
+    months[key] = { label: d.toLocaleDateString("ar",{month:"short"}), dueCents:0, recCents:0, days:0, ot:0 };
   }
   RB.all("work").forEach(w=>{
-    const key = w.d.slice(0,7);
+    const key = String(w.d||"").slice(0,7);
     if(months[key]){
-      months[key].due += w.due||0;
-      months[key].rec += w.rec||0;
+      months[key].dueCents += toCents(w.due);
+      months[key].recCents += toCents(w.rec);
       if(w.k === "work") months[key].days++;
       months[key].ot += w.ot||0;
     }
   });
-  return Object.entries(months).map(([k,v])=>({ key:k, ...v, rem: v.due-v.rec }));
+  return Object.entries(months).map(([k,v])=>({ key:k, label:v.label, due:v.dueCents/100, rec:v.recCents/100, days:v.days, ot:v.ot, rem:(v.dueCents-v.recCents)/100 }));
 }
 
 function drawMonthlyChart(){
